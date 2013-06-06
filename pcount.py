@@ -78,8 +78,6 @@ class PCountSession (EventMixin):
     global_vlan_id+=1
     self.flowTables = flow_tables
     
-    #print "\n\n ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^  ROUND %s OF PCOUNT ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^" %(global_vlan_id)
-    
     self._start_pcount_session(u_switch_id, d_switch_id, nw_src, nw_dst,global_vlan_id)
     
     

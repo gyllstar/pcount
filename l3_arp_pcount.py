@@ -56,20 +56,30 @@ FLOW_IDLE_TIMEOUT = 1200
 ARP_TIMEOUT = 6000 * 2
 
 # in seconds
-PCOUNT_WINDOW_SIZE=5  
-PCOUNT_CALL_FREQUENCY=PCOUNT_WINDOW_SIZE+3
+PCOUNT_WINDOW_SIZE=10  
+PCOUNT_CALL_FREQUENCY=PCOUNT_WINDOW_SIZE+5
 
-measure_pnts_file_str="measure-4s-1p.csv"
+#measure_pnts_file_str="measure-4s-1p.csv"
 #measure_pnts_file_str="measure-3s-2p.csv"
 #measure_pnts_file_str="measure-3s-1p.csv"
 #measure_pnts_file_str="measure-2s-2p.csv"
-#measure_pnts_file_str="measure-2s-1p.csv"
+measure_pnts_file_str="measure-2s-1p.csv"
 
 mtree_file_str="mtree-4s-1t.csv"
 
 IS_MTREE_EXPT=False
 installed_mtrees=[] #list of multicast addresses with an mtree already installed
 
+
+# mcast address = 10.10.10.10, src = 10.0.0.3, dst1=10.0.0.1, dst2 = 10.0.0.2
+# tree: 
+#       h1 -- s4
+#                \ s6 --- s7 --- h3              
+#       h2 -- s5 /
+h1 = IPAddr("10.0.0.1")
+h2 = IPAddr("10.0.0.2")
+h3 = IPAddr("10.0.0.3")
+mcast_mac_addr = EthAddr("10:10:10:10:10:10")
 
 
 
@@ -243,7 +253,7 @@ class l3_arp_pcount_switch (EventMixin):
     
     for measure_pnt in self.flow_measure_points[d_switch_id]:
       if measure_pnt[0] == nw_src and measure_pnt[1] == nw_dst:
-        return True,measure_pnt[2]
+        return True,measure_pnt[2]  #returns the upstream switch id 
       
     return False,-1  
   
@@ -391,6 +401,10 @@ class l3_arp_pcount_switch (EventMixin):
     
     action = of.ofp_action_nw_addr.set_dst(IPAddr(new_dst))
     msg.actions.append(action)
+    
+    new_mac_addr = self.arpTable[switch_id][new_dst].mac
+    l2_action = of.ofp_action_dl_addr.set_dst(new_mac_addr)
+    msg.actions.append(l2_action)
         
     #print "(%s,%s,%s,%s,%s)" %(switch_id,nw_src,ports,nw_mcast_dst,new_dst)
     for prt in ports:
@@ -492,15 +506,6 @@ class l3_arp_pcount_switch (EventMixin):
     
     print "\n^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^"
     print "start of function call _setup_mtree(nw_src=%s,nw_mcast_dst=%s,inport=%s,arp_packet=%s,eth_packet=%s)" %(nw_src,nw_mcast_dst,inport,arp_packet,eth_packet)
-    # mcast address = 10.10.10.10, src = 10.0.0.3, dst1=10.0.0.1, dst2 = 10.0.0.2
-    # tree: 
-    #       h1 -- s4
-    #                \ s6 --- s7 --- h3              
-    #       h2 -- s5 /
-    h1 = IPAddr("10.0.0.1")
-    h2 = IPAddr("10.0.0.2")
-    h3 = IPAddr("10.0.0.3")
-    mcast_mac_addr = EthAddr("10-10-10-10-10-10")
     
     
     # s7: install (src=10.0.0.3, dst = 10.10.10.10, outport)
@@ -559,10 +564,10 @@ class l3_arp_pcount_switch (EventMixin):
     #       h1 -- s4
     #                \ s6 --- s7 --- h3              
     #       h2 -- s5 /
-    h1 = IPAddr("10.0.0.1")
-    h2 = IPAddr("10.0.0.2")
-    h3 = IPAddr("10.0.0.3")
-    mcast_mac_addr = EthAddr("10:10:10:10:10:10")
+    #h1 = IPAddr("10.0.0.1")
+    #h2 = IPAddr("10.0.0.2")
+    #h3 = IPAddr("10.0.0.3")
+    #mcast_mac_addr = EthAddr("10:10:10:10:10:10")
     #mcast_mac_addr = EthAddr("10-10-10-10-10-10")
     
     
@@ -633,16 +638,27 @@ class l3_arp_pcount_switch (EventMixin):
         if a.protosrc != 0:
           
           if self._is_mcast_address(a.protodst):
+            log.debug("skipping normal ARP Request code because ARP request is for multicast address %s" %(str(a.protodst)))
+            
             if a.protodst in installed_mtrees:
               print "already setup mcast tree for s%s, inport=%s,dest=%s, just resending the ARP reply and skipping mcast setup." %(dpid,inport,a.protodst)
               self._send_arp_reply(packet, a, dpid, inport, self.arpTable[dpid][a.protodst].mac, self.arpTable[dpid][a.protodst].port)
-              return
+            else:
+              #getting the outport requires that we have run a "pingall" to setup the flow tables for the non-multicast addreses
+              outport = dpg_utils.find_nonvlan_flow_outport(self.flowTables,dpid, a.protosrc, h1)
+              self.arpTable[dpid][a.protodst] = Entry(outport,mcast_mac_addr)
+              self._send_arp_reply(packet, a, dpid, inport, self.arpTable[dpid][a.protodst].mac, self.arpTable[dpid][a.protodst].port)
             
-            log.info("skipping normal ARP Request code because ARP request is for multicast address %s" %(str(a.protodst)))
-            self._setup_mtree(a.protosrc,a.protodst,inport,a,packet)
-            self._setup_mtree_measure_pnts(a.protodst)
-            #os._exit(0)
             return
+          #  if a.protodst in installed_mtrees:
+          #    print "already setup mcast tree for s%s, inport=%s,dest=%s, just resending the ARP reply and skipping mcast setup." %(dpid,inport,a.protodst)
+          #    self._send_arp_reply(packet, a, dpid, inport, self.arpTable[dpid][a.protodst].mac, self.arpTable[dpid][a.protodst].port)
+          #    return
+              
+          #  log.info("skipping normal ARP Request code because ARP request is for multicast address %s" %(str(a.protodst)))
+         #   self._setup_mtree(a.protosrc,a.protodst,inport,a,packet)
+         #   self._setup_mtree_measure_pnts(a.protodst)
+         #   return
 
           # Learn or update port/MAC info for the SOURCE address 
           if a.protosrc in self.arpTable[dpid]:
