@@ -222,9 +222,12 @@ class l3_arp_pcount_switch (EventMixin):
     
     pcounter = pcount.PCountSession()
     
-    #Timer(PCOUNT_CALL_FREQUENCY,pcounter.pcount_session, args = [u_switch_id, d_switch_id,nw_src, nw_dst, self.flowTables, PCOUNT_WINDOW_SIZE])
-    Timer(PCOUNT_CALL_FREQUENCY,pcounter.pcount_session, args = [u_switch_id, d_switch_id,nw_src, nw_dst, self.flowTables, PCOUNT_WINDOW_SIZE],recurring=True)
     
+    d_switch_ids = list()
+    d_switch_ids.append(d_switch_id)
+    
+    #Timer(PCOUNT_CALL_FREQUENCY,pcounter.pcount_session, args = [u_switch_id, d_switch_id,nw_src, nw_dst, self.flowTables, PCOUNT_WINDOW_SIZE])
+    Timer(PCOUNT_CALL_FREQUENCY,pcounter.pcount_session, args = [u_switch_id, d_switch_ids,nw_src, nw_dst, self.flowTables, PCOUNT_WINDOW_SIZE],recurring=True)
 
     
   def _check_start_pcount(self,d_switch_id,nw_src,nw_dst):
