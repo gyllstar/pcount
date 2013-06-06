@@ -85,13 +85,6 @@ class PCountSession (EventMixin):
     Timer(window_size, self._stop_pcount_session_and_query, args = [u_switch_id, d_switch_id,nw_src,nw_dst,global_vlan_id])
     
 
-  #moved this function to dpg_utils.py
-  def _send_msg_to_switch_depracted(self,msg,switch_id):
-    
-    for con in core.openflow._connections.itervalues():
-      if con.dpid == switch_id:
-        con.send(msg.pack())
-
   # note: this function ends up querying the switch for all flow entries that match the (nw_src, nw_dst).  there is nothing unique in the VLAN tagging match structure
   #       to allow us to just query for the tagging flow.  (cannot use priority becasue this is not in the match structure)  
   def _query_tagging_switch(self,switch_id,vlan_id,nw_src,nw_dst):
@@ -109,14 +102,6 @@ class PCountSession (EventMixin):
           match = self._find_counting_flow_match(switch_id, nw_src, nw_dst, vlan_id)
           #print "sent counting stats request to s%s with params=(nw_src=%s, nw_dst=%s, vlan_id=%s)" %(switch_id, nw_src, nw_dst, vlan_id)
           con.send(of.ofp_stats_request(body=of.ofp_flow_stats_request(match=match)))
-
-  def _query_all_switches_depracted(self):
-    
-    log.debug("sent stats query to all switches")
-        
-    # Now actually request flow stats from all switches
-    for con in core.openflow._connections.itervalues():
-        con.send(of.ofp_stats_request(body=of.ofp_flow_stats_request()))
 
   def _start_pcount_session(self,u_switch_id,d_switch_id,nw_src,nw_dst,vlan_id):
     

@@ -225,23 +225,7 @@ class l3_arp_pcount_switch (EventMixin):
     #Timer(PCOUNT_CALL_FREQUENCY,pcounter.pcount_session, args = [u_switch_id, d_switch_id,nw_src, nw_dst, self.flowTables, PCOUNT_WINDOW_SIZE])
     Timer(PCOUNT_CALL_FREQUENCY,pcounter.pcount_session, args = [u_switch_id, d_switch_id,nw_src, nw_dst, self.flowTables, PCOUNT_WINDOW_SIZE],recurring=True)
     
-  
-  # replaced by is_flow_tagging_switch and is_flow_counting_switch
-  def _is_pcount_flow_depracted(self,nw_src,nw_dst,switch_id,is_tagging_switch):
 
-    if not is_tagging_switch: 
-      result,junk = self._check_start_pcount(switch_id, nw_src, nw_dst)
-      #print "\n \t %s for is_pcount_flow (nw_src = %s,nw_dest=%s,switch_id=%s) \n" %(result,nw_src,nw_dst,switch_id)
-      return result
-      
-    # must be the tagging switch, so is upstream
-    for measure_pnts in self.flow_measure_points.values():
-      for measure_pnt in measure_pnts:
-        if measure_pnt[0] == nw_src and measure_pnt[1] == nw_dst:
-        #  print "\n \t TRUE for is_pcount_flow (nw_src = %s,nw_dest=%s,switch_id=%s) \n" %(nw_src,nw_dst,switch_id)
-          return True
-        
-    #print "\n \t FALSE for is_pcount_flow (nw_src = %s,nw_dest=%s,switch_id=%s) \n" %(nw_src,nw_dst,switch_id)
     
   def _check_start_pcount(self,d_switch_id,nw_src,nw_dst):
     
@@ -282,52 +266,6 @@ class l3_arp_pcount_switch (EventMixin):
     
     return False
         
-  
-  def _handle_ipv4_PacketIn_original(self,event,packet,dpid,inport):
-    log.debug("%i %i IP %s => %s", dpid,inport,str(packet.next.srcip),str(packet.next.dstip))
-
-    # Learn or update port/MAC info
-    if packet.next.srcip in self.arpTable[dpid]:
-      if self.arpTable[dpid][packet.next.srcip] != (inport, packet.src):
-        log.info("%i %i RE-learned %s", dpid,inport,str(packet.next.srcip))
-    else:
-      log.debug("%i %i learned %s", dpid,inport,str(packet.next.srcip))
-    self.arpTable[dpid][packet.next.srcip] = Entry(inport, packet.src)
-
-    # Try to forward
-    dstaddr = packet.next.dstip
-    if dstaddr in self.arpTable[dpid]:
-      # We have info about what port to send it out on...
-
-      prt = self.arpTable[dpid][dstaddr].port
-      if prt == inport:
-        log.warning("%i %i not sending packet for %s back out of the input port" % (
-          dpid, inport, str(dstaddr)))
-      else:
-        log.debug("%i %i installing flow for %s => %s out port %i" % (dpid,
-            inport, str(packet.next.srcip), str(dstaddr), prt))
-
-
-        msg = of.ofp_flow_mod(command=of.OFPFC_ADD,
-                                idle_timeout=FLOW_IDLE_TIMEOUT,
-                                hard_timeout=of.OFP_FLOW_PERMANENT,
-                                buffer_id=event.ofp.buffer_id,
-                                action=of.ofp_action_output(port = prt)) 
-        
-        match = of.ofp_match.from_packet(packet,inport) 
-        
-        msg.match = of.ofp_match(dl_type = ethernet.IP_TYPE, nw_src=match._nw_src, nw_dst = match._nw_dst) #DPG: match using L3 address
-        
-        self._cache_flow_table_entry(dpid, msg)
-        
-        event.connection.send(msg.pack())
-        
-        start_pcount,u_switch_id = self._check_start_pcount(dpid,match.nw_src,match.nw_dst)
-        
-        if start_pcount:
-          self._start_pcount_thread(u_switch_id, dpid, match.nw_src, match.nw_dst)
-        
-  
   
   def _handle_ipv4_PacketIn(self,event,packet,dpid,inport):
     log.debug("%i %i IP %s => %s", dpid,inport,str(packet.next.srcip),str(packet.next.dstip))
@@ -502,58 +440,6 @@ class l3_arp_pcount_switch (EventMixin):
     
     # send ARP table entry to switch?
   
-  def _setup_mtree_original(self,nw_src,nw_mcast_dst,inport,arp_packet,eth_packet):
-    
-    print "\n^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^"
-    print "start of function call _setup_mtree(nw_src=%s,nw_mcast_dst=%s,inport=%s,arp_packet=%s,eth_packet=%s)" %(nw_src,nw_mcast_dst,inport,arp_packet,eth_packet)
-    
-    
-    # s7: install (src=10.0.0.3, dst = 10.10.10.10, outport)
-    switch_id = 7
-    prt = dpg_utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h1)
-    ports=[]
-    ports.append(prt) 
-    self._install_basic_mcast_flow(switch_id, nw_src,ports,nw_mcast_dst)
-    #self._update_arp_table_for_mtree(eth_packet,arp_packet,switch_id, inport,nw_mcast_dst, of.OFPP_IN_PORT, mcast_mac_addr)
-    self._update_arp_table_for_mtree(eth_packet,arp_packet,switch_id, inport,nw_mcast_dst, prt, mcast_mac_addr)
-    
-    
-    # s6: install (src=10.0.0.3, dst = 10.10.10.10, outport_list) or
-    # s6: install (src=10.0.0.3, dst = 10.0.0.1, outport),  (src=10.0.0.3, dst = 10.0.0.6, outport) 
-    switch_id = 6
-    ports[:] = []
-    p1 = dpg_utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h1)
-    p2 = dpg_utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h2)
-    ports.append(p1)
-    ports.append(p2)
-    self._install_basic_mcast_flow(switch_id, nw_src, ports, nw_mcast_dst)
-    #self._update_arp_table_for_mtree(eth_packet,arp_packet,switch_id, inport,nw_mcast_dst, prt, mcast_mac_addr)
-    #find port to s7
-    #p3 = dpg_utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h3)
-    #self._update_arp_table_for_mtree(eth_packet,arp_packet,switch_id, inport,nw_mcast_dst, p3, mcast_mac_addr)
-    
-    # s5: rewrite destination address from 10.10.10.10 to h2 (10.0.0.2)
-    switch_id = 5
-    ports[:] = []
-    p1 = dpg_utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h2)
-    ports.append(p1)
-    self._install_rewrite_dst_mcast_flow(switch_id, nw_src, ports, nw_mcast_dst, h2)
-    
-    # s4: rewrite destination address from 10.10.10.10 to h1 (10.0.0.1)
-    switch_id = 4
-    ports[:] = []
-    p1 = dpg_utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h1)
-    ports.append(p1)
-    self._install_rewrite_dst_mcast_flow(switch_id, nw_src, ports, nw_mcast_dst, h1)   
-    
-    global installed_mtrees
-    installed_mtrees.append(nw_mcast_dst)
-    
-    print "end of function call _setup_mtree(nw_src=%s,nw_mcast_dst=%s,inport=%s,arp_packet=%s,eth_packet=%s)" %(nw_src,nw_mcast_dst,inport,arp_packet,eth_packet)
-    print "^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\n"
-    #os._exit(0)
-    
-
   
   def _setup_mtree(self,nw_src,nw_mcast_dst,inport):
     
