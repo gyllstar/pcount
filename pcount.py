@@ -106,8 +106,8 @@ class PCountSession (EventMixin):
         if con.dpid == switch_id:
           match = self._find_counting_flow_match(switch_id, nw_src, nw_dst, vlan_id)
           #print "sent counting stats request to s%s with params=(nw_src=%s, nw_dst=%s, vlan_id=%s)" %(switch_id, nw_src, nw_dst, vlan_id)
-          con.send(of.ofp_stats_request(body=of.ofp_flow_stats_request(match=match)))
-          #con.send(of.ofp_stats_request(body=of.ofp_flow_stats_request()))  #DPG: temp for debugging so we can see all flow table values
+          #con.send(of.ofp_stats_request(body=of.ofp_flow_stats_request(match=match)))
+          con.send(of.ofp_stats_request(body=of.ofp_flow_stats_request()))  #DPG: temp for debugging so we can see all flow table values
 
   def _start_pcount_session(self,u_switch_id,d_switch_ids,strip_vlan_switch_ids,nw_src,nw_dst,vlan_id):
     
@@ -180,7 +180,8 @@ class PCountSession (EventMixin):
     flow is the flow in which packet loss is measured
     """
     
-    log.debug("stopped pcount session between switches (s%s,%s) for flow (src=%s,dst=%s,vlan_id=%s)" %(u_switch_id,d_switch_ids,nw_src,nw_dst,vlan_id))
+    current_time = time.strftime("%a, %d %b %Y %H:%M:%S", time.localtime())
+    log.debug("(%s) stopped pcount session between switches (s%s,%s) for flow (src=%s,dst=%s,vlan_id=%s)" %(current_time,u_switch_id,d_switch_ids,nw_src,nw_dst,vlan_id))
     
     self.current_highest_priority_flow_num+=1
     new_flow_priority = self.current_highest_priority_flow_num   
@@ -189,12 +190,10 @@ class PCountSession (EventMixin):
     self._reinstall_basic_flow_entry(u_switch_id, nw_src, nw_dst, new_flow_priority)
 
     # (2): wait for time proportional to transit time between u and d to turn counting off at d
-    print "sleeping for %s secs" %(PROPOGATION_DELAY)
     time.sleep(PROPOGATION_DELAY)
-    print "sleeping complete."
     
-    for d_switch_id in d_switch_ids:
-      self._reinstall_basic_flow_entry(d_switch_id, nw_src, nw_dst, new_flow_priority)
+ #   for d_switch_id in d_switch_ids:
+ #     self._reinstall_basic_flow_entry(d_switch_id, nw_src, nw_dst, new_flow_priority)
     
     # (3) query u and d for packet counts
     self._query_tagging_switch(u_switch_id, vlan_id,nw_src,nw_dst)
@@ -222,10 +221,10 @@ class PCountSession (EventMixin):
       dpg_utils.send_msg_to_switch(d_switch_msg , d_switch_id)
       
       #delete the original downstream flow
-      d_switch_msg2 = of.ofp_flow_mod(command=of.OFPFC_DELETE_STRICT)
-      d_switch_msg2.match = self._find_orig_flow_and_clean_cache(d_switch_id,nw_src,nw_dst,old_flow_priority)
-      d_switch_msg2.priority = old_flow_priority
-      dpg_utils.send_msg_to_switch(d_switch_msg2 , d_switch_id)
+ #     d_switch_msg2 = of.ofp_flow_mod(command=of.OFPFC_DELETE_STRICT)
+ #     d_switch_msg2.match = self._find_orig_flow_and_clean_cache(d_switch_id,nw_src,nw_dst,old_flow_priority)
+ #     d_switch_msg2.priority = old_flow_priority
+ #     dpg_utils.send_msg_to_switch(d_switch_msg2 , d_switch_id)
 
   
   def _reinstall_basic_flow_entry(self,switch_id,nw_src,nw_dst,flow_priority):
