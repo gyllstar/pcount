@@ -31,32 +31,6 @@ def send_msg_to_switch(msg,switch_id):
       con.send(msg.pack())
 
 
-def remove_old_flows_UNUSED(u_switch_id,nw_src,nw_dst,vlan_id,d_switch_ids):
-  
-  # delete the upstream VLAN tagging flow
-  u_switch_msg = of.ofp_flow_mod(command=of.OFPFC_DELETE_STRICT)
-  u_switch_msg.match,u_switch_msg.priority = self._find_tagging_flow_and_clean_cache(u_switch_id,nw_src,nw_dst,vlan_id)
-  dpg_utils.send_msg_to_switch(u_switch_msg , u_switch_id)
-
-  #delete the original upstream flow
-  old_flow_priority = self.current_highest_priority_flow_num - 2
-  u_switch_msg2 = of.ofp_flow_mod(command=of.OFPFC_DELETE_STRICT)
-  u_switch_msg2.match = self._find_orig_flow_and_clean_cache(u_switch_id,nw_src,nw_dst,old_flow_priority)
-  u_switch_msg2.priority = old_flow_priority
-  dpg_utils.send_msg_to_switch(u_switch_msg2 , u_switch_id)
-
-  for d_switch_id in d_switch_ids:    
-    # delete the downstream VLAN counting flow
-    d_switch_msg = of.ofp_flow_mod(command=of.OFPFC_DELETE_STRICT)
-    d_switch_msg.match,d_switch_msg.priority = self._find_vlan_counting_flow_and_clean_cache(d_switch_id,nw_src,nw_dst,vlan_id)
-    dpg_utils.send_msg_to_switch(d_switch_msg , d_switch_id)
-    
-    #delete the original downstream flow
-    d_switch_msg2 = of.ofp_flow_mod(command=of.OFPFC_DELETE_STRICT)
-    d_switch_msg2.match = self._find_orig_flow_and_clean_cache(d_switch_id,nw_src,nw_dst,old_flow_priority)
-    d_switch_msg2.priority = old_flow_priority
-    dpg_utils.send_msg_to_switch(d_switch_msg2 , d_switch_id)
-
 def _is_vlan_flow_entry(flow_entry):
   
 

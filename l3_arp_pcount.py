@@ -537,8 +537,6 @@ class l3_arp_pcount_switch (EventMixin):
     #d_switch_ids = [6,5,4]
     #d_switch_ids = [5,4]
     
-    print u_switch_id,d_switch_ids
-    os._exit(0)
     return u_switch_id, d_switch_ids
 
   
@@ -783,9 +781,9 @@ class l3_arp_pcount_switch (EventMixin):
       is_flow_counting_switch = self._is_flow_counting_switch(switch_id, nw_src, nw_dst)
       
 
-      #if dpg_verbose_output and nw_dst == mcast_ip_addr:
+      if dpg_verbose_output and nw_dst == mcast_ip_addr:
       #if dpg_verbose_output and nw_src == h3:
-      if dpg_verbose_output and nw_src == h3 and nw_dst == h1:
+      #if dpg_verbose_output and nw_src == h3 and nw_dst == h1:
       #if dpg_verbose_output:
         print "-------------------------------------------"
         print flow_stat.match
@@ -814,8 +812,8 @@ class l3_arp_pcount_switch (EventMixin):
         total = self._total_tag_and_cnt_switches(nw_src, nw_dst)
         self._record_pcount_value(vlan_id, nw_src, nw_dst, switch_id, packet_count,is_flow_tagging_switch, total)      
 
-        #log.debug("flow stat query result -- (s%s,src=%s,dst=%s,vid=%s) = %s; \t is_counter=%s, is_tagger=%s " %(switch_id,nw_src,nw_dst,vlan_id,packet_count,is_flow_counting_switch,is_flow_tagging_switch))
-        print "flow stat query result -- (s%s,src=%s,dst=%s,vid=%s) = %s; \t is_counter=%s, is_tagger=%s " %(switch_id,nw_src,nw_dst,vlan_id,packet_count,is_flow_counting_switch,is_flow_tagging_switch)
+        log.debug("flow stat query result -- (s%s,src=%s,dst=%s,vid=%s) = %s; \t is_counter=%s, is_tagger=%s " %(switch_id,nw_src,nw_dst,vlan_id,packet_count,is_flow_counting_switch,is_flow_tagging_switch))
+        #print "flow stat query result -- (s%s,src=%s,dst=%s,vid=%s) = %s; \t is_counter=%s, is_tagger=%s " %(switch_id,nw_src,nw_dst,vlan_id,packet_count,is_flow_counting_switch,is_flow_tagging_switch)
         packet_count=-1
         vlan_id = -1
         nw_src=-1
