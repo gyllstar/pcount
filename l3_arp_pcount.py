@@ -60,11 +60,11 @@ PCOUNT_WINDOW_SIZE=10
 PCOUNT_CALL_FREQUENCY=PCOUNT_WINDOW_SIZE+5
 
 #measure_pnts_file_str="measure-4s-3d-1p.csv"
-#measure_pnts_file_str="measure-4s-2d-1p.csv"
+measure_pnts_file_str="measure-4s-2d-1p.csv"
 #measure_pnts_file_str="measure-4s-1p.csv"
 #measure_pnts_file_str="measure-3s-2p.csv"
 #measure_pnts_file_str="measure-3s-1p.csv"
-measure_pnts_file_str="measure-3s-2d-1p.csv"
+#measure_pnts_file_str="measure-3s-2d-1p.csv"
 #measure_pnts_file_str="measure-2s-2p.csv"
 #measure_pnts_file_str="measure-2s-1p.csv"
 
@@ -532,31 +532,35 @@ class l3_arp_pcount_switch (EventMixin):
     global installed_mtrees
     installed_mtrees.append(nw_mcast_dst)
     
-    self._find_measurement_points()
-    u_switch_id = 7
-    d_switch_ids = [6,5,4]
+    u_switch_id,d_switch_ids = self._find_mcast_measure_points(nw_src,mcast_ip_addr)
+    #u_switch_id = 7
+    #d_switch_ids = [6,5,4]
     #d_switch_ids = [5,4]
     
+    print u_switch_id,d_switch_ids
+    os._exit(0)
     return u_switch_id, d_switch_ids
 
   
-  def _find_measurement_points(self):
+  def _find_mcast_measure_points(self, nw_src,mcast_ip_addr):
     
-    print "^^^^^^^^^^^^^^^^^^^^^ DPG: TODO IMPLEMENT l3_arp_pcount._find_measurement_points()"
+    #print "^^^^^^^^^^^^^^^^^^^^^ DPG: TODO IMPLEMENT l3_arp_pcount._find_measurement_points()"
+        # dict.  d_switch_id1 --> list w/ entries (d_switch_id2, d_switch_id3, .... , u_switch_id,nw_src,nw_dst)
+    #self.flow_measure_points={}  
     
-    #===========================================================================
-    # for measure_pnt in self.flow_measure_points[d_switch_id]:
-    #  last_indx = len(measure_pnt) -1
-    #  
-    #  if measure_pnt[last_indx-1] == nw_src and measure_pnt[last_indx] == nw_dst:
-    #    dstream_switches = list()
-    #    dstream_switches.append(d_switch_id)
-    #    dstream_switches = dstream_switches + measure_pnt[0:last_indx-2]
-    #    
-    #    return measure_pnt[last_indx-2],dstream_switches  #returns the upstream switch id 
-    #  
-    # return -1,-1
-    #===========================================================================
+    for d_switch_id in self.flow_measure_points.keys():
+    
+      for measure_pnt in self.flow_measure_points[d_switch_id]:
+        last_indx = len(measure_pnt) -1
+      
+      if measure_pnt[last_indx-1] == nw_src and measure_pnt[last_indx] == mcast_ip_addr:
+        dstream_switches = list()
+        dstream_switches.append(d_switch_id)
+        dstream_switches = dstream_switches + measure_pnt[0:last_indx-2]
+        
+        return measure_pnt[last_indx-2],dstream_switches  #returns the upstream switch id 
+      
+    return -1,-1
   
   def _handle_arp_PacketIn(self,event,packet,dpid,inport):
     a = packet.next  # 'a' seems to be an IP packet (or actually it's an ARP packet)
