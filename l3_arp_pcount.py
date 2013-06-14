@@ -59,11 +59,14 @@ ARP_TIMEOUT = 6000 * 2
 PCOUNT_WINDOW_SIZE=10  
 PCOUNT_CALL_FREQUENCY=PCOUNT_WINDOW_SIZE+5
 
+#measure_pnts_file_str="measure-4s-3d-1p.csv"
+#measure_pnts_file_str="measure-4s-2d-1p.csv"
 #measure_pnts_file_str="measure-4s-1p.csv"
 #measure_pnts_file_str="measure-3s-2p.csv"
 #measure_pnts_file_str="measure-3s-1p.csv"
+measure_pnts_file_str="measure-3s-2d-1p.csv"
 #measure_pnts_file_str="measure-2s-2p.csv"
-measure_pnts_file_str="measure-2s-1p.csv"
+#measure_pnts_file_str="measure-2s-1p.csv"
 
 mtree_file_str="mtree-4s-1t.csv"
 
@@ -79,6 +82,7 @@ installed_mtrees=[] #list of multicast addresses with an mtree already installed
 h1 = IPAddr("10.0.0.1")
 h2 = IPAddr("10.0.0.2")
 h3 = IPAddr("10.0.0.3")
+mcast_ip_addr = IPAddr("10.10.10.10")
 mcast_mac_addr = EthAddr("10:10:10:10:10:10")
 
 
@@ -94,7 +98,7 @@ class Entry (object):
   """
   def __init__ (self, port, mac):
     self.timeout = time.time() + ARP_TIMEOUT
-    self.port = port
+    self.port = port    #DPG: this could be a list of ports because we support Layer 3 multicast
     self.mac = mac
 
   def __eq__ (self, other):
@@ -122,12 +126,14 @@ class l3_arp_pcount_switch (EventMixin):
     # for each switch keep track of flow tables (switchId --> flow-table-entry), specifically (dpid --> ofp_flow_mod). 
     self.flowTables = {} #this is a hack that saves us from queries each switch for their flow table)
     
-    # dict.  d_switch_id --> list w/ entries (nw_src,nw_dst,u_switch_id)
-    self.flow_measure_points={}
+    # dict.  d_switch_id1 --> list w/ entries (d_switch_id2, d_switch_id3, .... , u_switch_id,nw_src,nw_dst)
+    self.flow_measure_points={}  # note this really ought to be (nw_src,nw_dst) -> (d_switch_id2, d_switch_id3, .... , u_switch_id)
     
     #multicast address -> [src,dest1,dest2,...]
     self.mtrees = {}
-
+    
+    # (src-ip,dst-ip) -> [switch_id1, switch_id2, ...]
+    self.flow_strip_vlan_switch_ids = {}
     
     # vlan_id -> [nw_src,nw_dst, u_switch_id,u_count,d_switch_id,d_count,u_count-dcount]
     self.pcount_results = dict()
@@ -181,8 +187,10 @@ class l3_arp_pcount_switch (EventMixin):
   
   def _read_flow_measure_points_file(self):
     
+    # file format: downstream-switch1,downstream-switch2, ..., upstream_switch,src-ip,dest-ip
 
     measure_file = "ext/topos/%s" %(measure_pnts_file_str)
+    log.debug("using measure points file: %s" %(measure_file))
     
     for line_list in csv.reader(open(measure_file)):
       val_list = list()
@@ -191,10 +199,29 @@ class l3_arp_pcount_switch (EventMixin):
       if "#" in line_list[0]:
         continue
       
-      val_list.insert(0, IPAddr(line_list[1]))
-      val_list.insert(1, IPAddr(line_list[2]))
-      val_list.insert(2, int(line_list[3]))
       key = int(line_list[0])
+      cnt=1 # skip the first 
+      src_index = len(line_list) - 2 # the src-ip address starts at the at the 2nd to last position
+      
+      # (d_switch_id2, d_switch_id3, .... , u_switch_id,nw_src,nw_dst)
+      while cnt < src_index:
+        val_list.insert(cnt-1, int(line_list[cnt]))
+        cnt+=1
+        
+      src_ip = IPAddr(line_list[cnt])
+      dst_ip = IPAddr(line_list[cnt+1])
+      val_list.insert(cnt-1, src_ip)
+      val_list.insert(cnt, dst_ip) 
+      
+      # egregious hard-coding of the most downstream node 
+      if src_ip == h3 and dst_ip == mcast_ip_addr:
+        self.flow_strip_vlan_switch_ids[(src_ip,dst_ip)] = [4,5]
+      elif src_ip == h3:
+        self.flow_strip_vlan_switch_ids[(src_ip,dst_ip)] = [4]
+      else:
+        log.error("something wrong with parsing measurement file %s when finding which switch_id should strip the VLAN tag.  Exiting program.") %(measure_file)
+        os._exit(0)
+        
       
       if self.flow_measure_points.has_key(key):
         entry = self.flow_measure_points[key]
@@ -204,9 +231,6 @@ class l3_arp_pcount_switch (EventMixin):
         entry.append(val_list)
         self.flow_measure_points[key] = entry
     
-    #print self.flow_measure_points
-    
-
     
   def _cache_flow_table_entry(self,dpid,flow_entry):
     
@@ -218,44 +242,60 @@ class l3_arp_pcount_switch (EventMixin):
       self.flowTables[dpid].append(flow_entry)
 
    
-  def _start_pcount_thread(self,u_switch_id, d_switch_id, nw_src, nw_dst):
+  def _start_pcount_thread(self,u_switch_id, d_switch_ids, nw_src, nw_dst):
     
     pcounter = pcount.PCountSession()
     
-    
-    d_switch_ids = list()
-    d_switch_ids.append(d_switch_id)
+    strip_vlan_switch_ids = self.flow_strip_vlan_switch_ids[(nw_src,nw_dst)]
     
     #Timer(PCOUNT_CALL_FREQUENCY,pcounter.pcount_session, args = [u_switch_id, d_switch_id,nw_src, nw_dst, self.flowTables, PCOUNT_WINDOW_SIZE])
-    Timer(PCOUNT_CALL_FREQUENCY,pcounter.pcount_session, args = [u_switch_id, d_switch_ids,nw_src, nw_dst, self.flowTables, PCOUNT_WINDOW_SIZE],recurring=True)
+    Timer(PCOUNT_CALL_FREQUENCY,pcounter.pcount_session, args = [u_switch_id, d_switch_ids,strip_vlan_switch_ids,nw_src, nw_dst, self.flowTables, PCOUNT_WINDOW_SIZE],recurring=True)
 
     
   def _check_start_pcount(self,d_switch_id,nw_src,nw_dst):
     
-    if IS_MTREE_EXPT:
-      return False,-1
+    #if IS_MTREE_EXPT:
+    #  return False,-1,-1
     
     if not self.flow_measure_points.has_key(d_switch_id):
-      return False,-1
+      return False,-1,-1
+    
     
     for measure_pnt in self.flow_measure_points[d_switch_id]:
-      if measure_pnt[0] == nw_src and measure_pnt[1] == nw_dst:
-        return True,measure_pnt[2]  #returns the upstream switch id 
+      last_indx = len(measure_pnt) -1
       
-    return False,-1  
+      if measure_pnt[last_indx-1] == nw_src and measure_pnt[last_indx] == nw_dst:
+        dstream_switches = list()
+        dstream_switches.append(d_switch_id)
+        dstream_switches = dstream_switches + measure_pnt[0:last_indx-2]
+        
+        return True,measure_pnt[last_indx-2],dstream_switches  #returns the upstream switch id 
+      
+    return False,-1,-1
   
   
 
   # counting means downstream
+  # TODO: refactor this mess by changing the structure of flow_measure_points to (nw_src,nw_dst) -> (d_switch_id2, d_switch_id3, .... , u_switch_id) b/c no longer will need to search
+  #       the entire dict for a match
   def _is_flow_counting_switch(self,switch_id,nw_src,nw_dst):
      
+    # could be the key
     if self.flow_measure_points.has_key(switch_id):
       for measure_pnt in self.flow_measure_points[switch_id]:
-        if measure_pnt[0] == nw_src and measure_pnt[1] == nw_dst:
+        last_indx = len(measure_pnt) -1
+        if measure_pnt[last_indx-1] == nw_src and measure_pnt[last_indx] == nw_dst:
           return True
      
-    return False   
+    # could also be one of the first few values in the value list
+    for measure_pnts in self.flow_measure_points.values():
+      for measure_pnt in measure_pnts:
+        last_indx = len(measure_pnt) -1
+        if measure_pnt[last_indx-1] == nw_src and measure_pnt[last_indx] == nw_dst:
+          if switch_id in measure_pnt[0:last_indx-2]:  # the list "subset" or slice is not inclusive on the upper index
+            return True
     
+    return False
      
   
   
@@ -264,10 +304,23 @@ class l3_arp_pcount_switch (EventMixin):
     
     for measure_pnts in self.flow_measure_points.values():
       for measure_pnt in measure_pnts:
-        if measure_pnt[2] == switch_id and measure_pnt[0] == nw_src and measure_pnt[1] == nw_dst:
+        last_indx = len(measure_pnt) -1
+        if measure_pnt[last_indx-2] == switch_id and measure_pnt[last_indx-1] == nw_src and measure_pnt[last_indx] == nw_dst:
           return True
     
+    
     return False
+  
+  
+  def _total_tag_and_cnt_switches(self, nw_src, nw_dst):
+    
+    for measure_pnts in self.flow_measure_points.values():
+      for measure_pnt in measure_pnts:
+        last_indx = len(measure_pnt) -1
+        if measure_pnt[last_indx-1] == nw_src and measure_pnt[last_indx] == nw_dst:
+          return len(measure_pnt) -2 + 1  # minus two because don't want to count the nw_src, nw_dst, and plus one because one counting switch is not in teh measure_pnt list (it is the hash key)
+    
+    return -1
         
   
   def _handle_ipv4_PacketIn(self,event,packet,dpid,inport):
@@ -288,14 +341,16 @@ class l3_arp_pcount_switch (EventMixin):
     
     if self._is_mcast_address(dstaddr):
       if dstaddr in installed_mtrees:
+        # should never reach here because mcast tree is setup when switch closest to root receives a msg destined for a multicast address 
         print "already setup mcast tree for s%s, inport=%s,dest=%s." %(dpid,inport,dstaddr)
         return
       
       log.info("special handling IP Packet in for multicast address %s" %(str(dstaddr)))
-      self._setup_mtree(srcaddr,dstaddr,inport)
-      self._setup_mtree_measure_pnts(dstaddr)
-      #os._exit(0)
-      #return
+      u_switch_id, d_switch_ids = self._setup_mtree(srcaddr,dstaddr,inport)
+      
+      self._start_pcount_thread(u_switch_id, d_switch_ids, srcaddr, dstaddr)
+
+      
     elif dstaddr in self.arpTable[dpid]:
       # We have info about what port to send it out on...
 
@@ -309,8 +364,8 @@ class l3_arp_pcount_switch (EventMixin):
 
 
         msg = of.ofp_flow_mod(command=of.OFPFC_ADD,
-                                idle_timeout=FLOW_IDLE_TIMEOUT,
-                                hard_timeout=of.OFP_FLOW_PERMANENT,
+                               # idle_timeout=FLOW_IDLE_TIMEOUT,
+                               # hard_timeout=of.OFP_FLOW_PERMANENT,
                                 buffer_id=event.ofp.buffer_id,
                                 action=of.ofp_action_output(port = prt)) 
         
@@ -322,10 +377,10 @@ class l3_arp_pcount_switch (EventMixin):
         
         event.connection.send(msg.pack())
         
-        start_pcount,u_switch_id = self._check_start_pcount(dpid,match.nw_src,match.nw_dst)
+        start_pcount,u_switch_id,d_switch_ids = self._check_start_pcount(dpid,match.nw_src,match.nw_dst)
         
         if start_pcount:
-          self._start_pcount_thread(u_switch_id, dpid, match.nw_src, match.nw_dst)
+          self._start_pcount_thread(u_switch_id, d_switch_ids, match.nw_src, match.nw_dst)
     else:
       log.error("no ARP entry at switch s%s for dst=%s" %(dpid,dstaddr))
         
@@ -335,7 +390,8 @@ class l3_arp_pcount_switch (EventMixin):
   
   def _install_rewrite_dst_mcast_flow(self,switch_id,nw_src,ports,nw_mcast_dst,new_dst):
   
-    msg = of.ofp_flow_mod(command=of.OFPFC_ADD,idle_timeout=FLOW_IDLE_TIMEOUT,hard_timeout=of.OFP_FLOW_PERMANENT)
+    #msg = of.ofp_flow_mod(command=of.OFPFC_ADD,idle_timeout=FLOW_IDLE_TIMEOUT,hard_timeout=of.OFP_FLOW_PERMANENT)
+    msg = of.ofp_flow_mod(command=of.OFPFC_ADD)
     msg.match = of.ofp_match(dl_type = ethernet.IP_TYPE, nw_src=nw_src, nw_dst = nw_mcast_dst)
 
     
@@ -359,7 +415,8 @@ class l3_arp_pcount_switch (EventMixin):
     
   def _install_basic_mcast_flow(self,switch_id,nw_src,ports,nw_mcast_dst):
   
-    msg = of.ofp_flow_mod(command=of.OFPFC_ADD,idle_timeout=FLOW_IDLE_TIMEOUT,hard_timeout=of.OFP_FLOW_PERMANENT)
+    #msg = of.ofp_flow_mod(command=of.OFPFC_ADD,idle_timeout=FLOW_IDLE_TIMEOUT,hard_timeout=of.OFP_FLOW_PERMANENT)
+    msg = of.ofp_flow_mod(command=of.OFPFC_ADD)
     msg.match = of.ofp_match(dl_type = ethernet.IP_TYPE, nw_src=nw_src, nw_dst = nw_mcast_dst)
     
     for prt in ports:
@@ -374,30 +431,6 @@ class l3_arp_pcount_switch (EventMixin):
   # dpg defined method
   #def _update_arp_table_and_reply_depracted(self,switch_id,inport,packet):
   def _send_arp_reply(self,eth_packet,arp_packet,switch_id,inport,mcast_mac_addr,outport):
-    
-                #===============================================================
-                #    r = arp()
-                # r.hwtype = a.hwtype
-                # r.prototype = a.prototype
-                # r.hwlen = a.hwlen
-                # r.protolen = a.protolen
-                # r.opcode = arp.REPLY
-                #
-                # r.hwdst = a.hwsrc
-                # r.protodst = a.protosrc #IP address
-                # r.protosrc = a.protodst #IP address
-                # r.hwsrc = self.arpTable[dpid][a.protodst].mac
-                # e = ethernet(type=packet.type, src=r.hwsrc, dst=a.hwsrc)
-                # e.set_payload(r)   # r is the ARP REPLY
-                # log.debug("%i %i answering ARP for %s" % (dpid, inport,
-                # str(r.protosrc)))
-                # msg = of.ofp_packet_out()
-                # msg.data = e.pack()
-                # msg.actions.append(of.ofp_action_output(port = of.OFPP_IN_PORT))
-                # msg.in_port = inport
-                # event.connection.send(msg)
-                #===============================================================
-    
     
     r = arp()
     r.hwtype = arp_packet.hwtype
@@ -446,8 +479,6 @@ class l3_arp_pcount_switch (EventMixin):
   
   def _setup_mtree(self,nw_src,nw_mcast_dst,inport):
     
-    print "\n++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++"
-    print "start of function call _setup_mtree(nw_src=%s,nw_mcast_dst=%s,inport=%s)" %(nw_src,nw_mcast_dst,inport)
     # mcast address = 10.10.10.10, src = 10.0.0.3, dst1=10.0.0.1, dst2 = 10.0.0.2
     # tree: 
     #       h1 -- s4
@@ -462,22 +493,21 @@ class l3_arp_pcount_switch (EventMixin):
     
     # s7: install (src=10.0.0.3, dst = 10.10.10.10, outport)
     switch_id = 7
-    prt = dpg_utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h1)
-    ports=[]
-    ports.append(prt) 
-    self._install_basic_mcast_flow(switch_id, nw_src,ports,nw_mcast_dst)
-    self.arpTable[switch_id][nw_mcast_dst] = Entry(prt,mcast_mac_addr)
+    s7_ports = dpg_utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h1)
+    #s7_ports = []
+    #s7_ports.append(prt)
+    self._install_basic_mcast_flow(switch_id, nw_src,s7_ports,nw_mcast_dst)
+    self.arpTable[switch_id][nw_mcast_dst] = Entry(s7_ports,mcast_mac_addr)
     
     
     # s6: install (src=10.0.0.3, dst = 10.10.10.10, outport_list) or
     # s6: install (src=10.0.0.3, dst = 10.0.0.1, outport),  (src=10.0.0.3, dst = 10.0.0.6, outport) 
     switch_id = 6
-    ports[:] = []
-    p1 = dpg_utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h1)
-    p2 = dpg_utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h2)
-    ports.append(p1)
-    ports.append(p2)
-    self._install_basic_mcast_flow(switch_id, nw_src, ports, nw_mcast_dst)
+    h1_prts = dpg_utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h1)
+    h2_prts = dpg_utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h2)
+    s6_ports = h1_prts + h2_prts
+    self._install_basic_mcast_flow(switch_id, nw_src, s6_ports, nw_mcast_dst)
+    self.arpTable[switch_id][nw_mcast_dst] = Entry(s6_ports,mcast_mac_addr)
     #self._update_arp_table_for_mtree(eth_packet,arp_packet,switch_id, inport,nw_mcast_dst, prt, mcast_mac_addr)
     #find port to s7
     #p3 = dpg_utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h3)
@@ -485,28 +515,48 @@ class l3_arp_pcount_switch (EventMixin):
     
     # s5: rewrite destination address from 10.10.10.10 to h2 (10.0.0.2)
     switch_id = 5
-    ports[:] = []
-    p1 = dpg_utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h2)
-    ports.append(p1)
-    self._install_rewrite_dst_mcast_flow(switch_id, nw_src, ports, nw_mcast_dst, h2)
+    s5_ports = dpg_utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h2)
+    #s5_ports = []
+    #s5_ports.append(p5)
+    self._install_rewrite_dst_mcast_flow(switch_id, nw_src, s5_ports, nw_mcast_dst, h2)
+    self.arpTable[switch_id][nw_mcast_dst] = Entry(s5_ports,mcast_mac_addr)
     
     # s4: rewrite destination address from 10.10.10.10 to h1 (10.0.0.1)
     switch_id = 4
-    ports[:] = []
-    p1 = dpg_utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h1)
-    ports.append(p1)
-    self._install_rewrite_dst_mcast_flow(switch_id, nw_src, ports, nw_mcast_dst, h1)   
+    s4_ports = dpg_utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h1)
+    #s4_ports = []
+    #s4_ports.append(p4)
+    self._install_rewrite_dst_mcast_flow(switch_id, nw_src, s4_ports, nw_mcast_dst, h1)  
+    self.arpTable[switch_id][nw_mcast_dst] = Entry(s4_ports,mcast_mac_addr) 
     
     global installed_mtrees
     installed_mtrees.append(nw_mcast_dst)
     
-    print "end of function call  _setup_mtree(nw_src=%s,nw_mcast_dst=%s,inport=%s)" %(nw_src,nw_mcast_dst,inport)
-    print "++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++\n\n"
-    #os._exit(0)
+    self._find_measurement_points()
+    u_switch_id = 7
+    d_switch_ids = [6,5,4]
+    #d_switch_ids = [5,4]
     
+    return u_switch_id, d_switch_ids
 
-  def _setup_mtree_measure_pnts(self,mcast_ip_address):
-    print "_setup_mtree_measure_pnts()"
+  
+  def _find_measurement_points(self):
+    
+    print "^^^^^^^^^^^^^^^^^^^^^ DPG: TODO IMPLEMENT l3_arp_pcount._find_measurement_points()"
+    
+    #===========================================================================
+    # for measure_pnt in self.flow_measure_points[d_switch_id]:
+    #  last_indx = len(measure_pnt) -1
+    #  
+    #  if measure_pnt[last_indx-1] == nw_src and measure_pnt[last_indx] == nw_dst:
+    #    dstream_switches = list()
+    #    dstream_switches.append(d_switch_id)
+    #    dstream_switches = dstream_switches + measure_pnt[0:last_indx-2]
+    #    
+    #    return measure_pnt[last_indx-2],dstream_switches  #returns the upstream switch id 
+    #  
+    # return -1,-1
+    #===========================================================================
   
   def _handle_arp_PacketIn(self,event,packet,dpid,inport):
     a = packet.next  # 'a' seems to be an IP packet (or actually it's an ARP packet)
@@ -653,7 +703,7 @@ class l3_arp_pcount_switch (EventMixin):
 #    output.close()
     
     
-  def _record_pcount_value(self,vlan_id,nw_src,nw_dst,switch_id,packet_count,is_upstream):
+  def _record_pcount_value(self,vlan_id,nw_src,nw_dst,switch_id,packet_count,is_upstream,total_tag_count_switches):
     # index of 0 is for the upstream value and index of 1 is for the downstream value
     
     result_list = list()    # vlan_id -> [nw_src,nw_dst, u_switch_id,u_count,d_switch_id,d_count,u_count-dcount]
@@ -663,19 +713,44 @@ class l3_arp_pcount_switch (EventMixin):
       result_list.insert(0,nw_src)
       result_list.insert(1,nw_dst)
       
+    # check to make result_list does not already contain an entry for switch_id
+    indx = 2
+    cnt=0
+    #while indx < len(result_list):
+    while cnt < total_tag_count_switches:
+      
+      if indx >= len(result_list):
+        cnt+=10000 #some large number so we exit the loop
+        continue
+      
+      if result_list[indx] == switch_id:  #look at 2,4,6,8, ...
+        log.debug("received duplicate stat result query for flow (vlan_id=%s,nw_src=%s,nw_dst=%s) at s%s.  Not logging the message." %(vlan_id,nw_src,nw_dst,switch_id))
+        return
+      
+      indx+=2
+      cnt+=1  
+      
     if is_upstream:
       result_list.insert(2,switch_id)
       result_list.insert(3, packet_count)
     else:
-      result_list.insert(4,switch_id)
-      result_list.insert(5, packet_count)
+      #result_list.insert(4,switch_id)
+      #result_list.insert(5, packet_count)
+      result_list.append(switch_id)
+      result_list.append(packet_count)
     
     self.pcount_results[vlan_id] = result_list
     
-    if len(result_list) == 6:
+    total = 2+ total_tag_count_switches * 2
+    if len(result_list) == total: 
       #print self.pcount_results
-      diff = result_list[3] - result_list[5]
-      result_list.insert(6,diff)
+      
+      for i in range(0,total_tag_count_switches-1):  
+          offset = 3+ (2*i + 2) #5, 7, 9, 11
+          diff = result_list[3] - result_list[offset]
+          result_list.append(diff)
+      #diff = result_list[3] - result_list[5]
+      #result_list.insert(6,diff)
       self.pcount_results[vlan_id] = result_list
       self._log_pcount_results()
 
@@ -689,6 +764,11 @@ class l3_arp_pcount_switch (EventMixin):
     nw_src=-1
     nw_dst=-1
     
+    #DPG temp for debugging
+    dpg_verbose_output = False  
+    if dpg_verbose_output:
+      print "\n s%s  ********************************************************************************************************************************************************************" %(switch_id)
+    
     for flow_stat in event.stats: #note that event stats is a list of flow table entries
       
       nw_src = flow_stat.match.nw_src
@@ -697,6 +777,19 @@ class l3_arp_pcount_switch (EventMixin):
       #insert something here about if it's a tagging or counting switch for this flow stat
       is_flow_tagging_switch = self._is_flow_tagging_switch(switch_id, nw_src, nw_dst)
       is_flow_counting_switch = self._is_flow_counting_switch(switch_id, nw_src, nw_dst)
+      
+
+      #if dpg_verbose_output and nw_dst == mcast_ip_addr:
+      #if dpg_verbose_output and nw_src == h3:
+      if dpg_verbose_output and nw_src == h3 and nw_dst == h1:
+      #if dpg_verbose_output:
+        print "-------------------------------------------"
+        print flow_stat.match
+        print "Priority = %s, Packet Count = %s, duration (secs)=%s, duraction (nsecs)=%s" %(flow_stat.priority,flow_stat.packet_count,flow_stat.duration_sec,flow_stat.duration_nsec)
+        for flow_action in flow_stat.actions:
+          print "action: \n %s" %(flow_action.show())
+        print "-------------------------------------------\n"
+        
       
       if not is_flow_tagging_switch and not is_flow_counting_switch:
         continue
@@ -711,18 +804,14 @@ class l3_arp_pcount_switch (EventMixin):
           packet_count = flow_stat.packet_count
           vlan_id = flow_stat.match.dl_vlan
           
-      #print "result for (s%s,src=%s,dst=%s,vid=%s) = %s; \t is_counter=%s, is_tagger=%s " %(switch_id,nw_src,nw_dst,vlan_id,packet_count,is_flow_counting_switch,is_flow_tagging_switch)
     
       # if was not set for some reason, then log nothing to output file
       if packet_count > -1:
-        #log.error("handle_flow_stats did not identify any flows at switch %s as a flow to be counted (by pcount) and should have." %(switch_id)) 
-        self._record_pcount_value(vlan_id, nw_src, nw_dst, switch_id, packet_count,is_flow_tagging_switch)       # DPG: XXXXX this should go inside the "for loop"
+        total = self._total_tag_and_cnt_switches(nw_src, nw_dst)
+        self._record_pcount_value(vlan_id, nw_src, nw_dst, switch_id, packet_count,is_flow_tagging_switch, total)      
 
-        #print "\t----------------------------------------------------------"
-        #print "\t|  \t\t S%s: VLAN_ID=%s, Count=%s\t\t | " %(switch_id,vlan_id,packet_count) 
-        #print "\t----------------------------------------------------------\n"
-        #log.debug("flow stat query result -- s%s: VLAN_ID=%s, Count=%s" %(switch_id,vlan_id,packet_count))
-        log.debug("flow stat query result -- (s%s,src=%s,dst=%s,vid=%s) = %s; \t is_counter=%s, is_tagger=%s " %(switch_id,nw_src,nw_dst,vlan_id,packet_count,is_flow_counting_switch,is_flow_tagging_switch))
+        #log.debug("flow stat query result -- (s%s,src=%s,dst=%s,vid=%s) = %s; \t is_counter=%s, is_tagger=%s " %(switch_id,nw_src,nw_dst,vlan_id,packet_count,is_flow_counting_switch,is_flow_tagging_switch))
+        print "flow stat query result -- (s%s,src=%s,dst=%s,vid=%s) = %s; \t is_counter=%s, is_tagger=%s " %(switch_id,nw_src,nw_dst,vlan_id,packet_count,is_flow_counting_switch,is_flow_tagging_switch)
         packet_count=-1
         vlan_id = -1
         nw_src=-1
