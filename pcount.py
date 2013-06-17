@@ -80,7 +80,8 @@ class PCountSession (EventMixin):
     self.flowTables = flow_tables
 
     current_time = time.strftime("%a, %d %b %Y %H:%M:%S", time.localtime())
-    log.debug("(%s) started pcount session between switches (s%s,%s) and flow (src=%s,dest=%s,vlan_id=%s) lasting %s seconds" %(current_time,u_switch_id,d_switch_ids,nw_src,nw_dst,global_vlan_id,window_size))    
+    log.debug("(%s) started pcount session between switches (s%s,%s) and flow (src=%s,dest=%s,vlan_id=%s) lasting %s seconds" %(current_time,u_switch_id,d_switch_ids,nw_src,nw_dst,global_vlan_id,window_size)) 
+    print "(%s) started pcount session between switches (s%s,%s) and flow (src=%s,dest=%s,vlan_id=%s) lasting %s seconds" %(current_time,u_switch_id,d_switch_ids,nw_src,nw_dst,global_vlan_id,window_size)    
     self._start_pcount_session(u_switch_id, d_switch_ids,strip_vlan_switch_ids, nw_src, nw_dst,global_vlan_id)
 
     

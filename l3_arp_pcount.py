@@ -59,8 +59,9 @@ ARP_TIMEOUT = 6000 * 2
 PCOUNT_WINDOW_SIZE=10  
 PCOUNT_CALL_FREQUENCY=PCOUNT_WINDOW_SIZE+5
 
+measure_pnts_file_str="measure-6s-2d-2p.csv"
 #measure_pnts_file_str="measure-4s-3d-1p.csv"
-measure_pnts_file_str="measure-4s-2d-1p.csv"
+#measure_pnts_file_str="measure-4s-2d-1p.csv"
 #measure_pnts_file_str="measure-4s-1p.csv"
 #measure_pnts_file_str="measure-3s-2p.csv"
 #measure_pnts_file_str="measure-3s-1p.csv"
@@ -68,24 +69,29 @@ measure_pnts_file_str="measure-4s-2d-1p.csv"
 #measure_pnts_file_str="measure-2s-2p.csv"
 #measure_pnts_file_str="measure-2s-1p.csv"
 
-mtree_file_str="mtree-4s-1t.csv"
+mtree_file_str="mtree-6s-2t.csv"
+#mtree_file_str="mtree-4s-1t.csv"
+
 
 IS_MTREE_EXPT=False
 installed_mtrees=[] #list of multicast addresses with an mtree already installed
 
 
-# mcast address = 10.10.10.10, src = 10.0.0.3, dst1=10.0.0.1, dst2 = 10.0.0.2
-# tree: 
-#       h1 -- s4
-#                \ s6 --- s7 --- h3              
-#       h2 -- s5 /
+
 h1 = IPAddr("10.0.0.1")
 h2 = IPAddr("10.0.0.2")
 h3 = IPAddr("10.0.0.3")
+h4 = IPAddr("10.0.0.4")
+h5 = IPAddr("10.0.0.5")
+h6 = IPAddr("10.0.0.6")
+h7 = IPAddr("10.0.0.7")
+h8 = IPAddr("10.0.0.8")
+h9 = IPAddr("10.0.0.9")
 mcast_ip_addr = IPAddr("10.10.10.10")
 mcast_mac_addr = EthAddr("10:10:10:10:10:10")
 
-
+mcast_ip_addr2 = IPAddr("10.11.11.11")
+mcast_mac_addr2 = EthAddr("11:11:11:11:11:11")
 
 
 class Entry (object):
@@ -184,7 +190,7 @@ class l3_arp_pcount_switch (EventMixin):
         entry = list()
         entry.append(val_list)
         self.mtrees[key] = entry
-  
+      
   def _read_flow_measure_points_file(self):
     
     # file format: downstream-switch1,downstream-switch2, ..., upstream_switch,src-ip,dest-ip
@@ -214,12 +220,16 @@ class l3_arp_pcount_switch (EventMixin):
       val_list.insert(cnt, dst_ip) 
       
       # egregious hard-coding of the most downstream node 
-      if src_ip == h3 and dst_ip == mcast_ip_addr:
-        self.flow_strip_vlan_switch_ids[(src_ip,dst_ip)] = [4,5]
+      if src_ip == h3 and dst_ip == mcast_ip_addr and key<10:
+        self.flow_strip_vlan_switch_ids[(src_ip,dst_ip)] = [4,5]   # should be h1 and h2 adjacent switches
+      elif src_ip == h3 and dst_ip == mcast_ip_addr and key>10:
+        self.flow_strip_vlan_switch_ids[(src_ip,dst_ip)] = [11,12]   # should be h1 and h2 adjacent switches
+      elif src_ip == h4 and dst_ip == mcast_ip_addr2:
+        self.flow_strip_vlan_switch_ids[(src_ip,dst_ip)] = [13,14]
       elif src_ip == h3:
         self.flow_strip_vlan_switch_ids[(src_ip,dst_ip)] = [4]
       else:
-        log.error("something wrong with parsing measurement file %s when finding which switch_id should strip the VLAN tag.  Exiting program.") %(measure_file)
+        log.error("something wrong with parsing measurement file %s when finding which switch_id should strip the VLAN tag.  Exiting program." %(measure_file))
         os._exit(0)
         
       
@@ -465,6 +475,7 @@ class l3_arp_pcount_switch (EventMixin):
     
   
     # dpg defined method #arp_packet,switch_id, nw_mcast_dst, prt, mcast_mac_addr
+    # 6/17/13: don't think this function is ever called
   def _update_arp_table_for_mtree(self,eth_packet,arp_packet,switch_id,inport,mcast_dst_ip_addr,outport,mcast_mac_addr):
     
     self.arpTable[switch_id][mcast_dst_ip_addr] = Entry(outport,mcast_mac_addr)
@@ -479,53 +490,56 @@ class l3_arp_pcount_switch (EventMixin):
   
   def _setup_mtree(self,nw_src,nw_mcast_dst,inport):
     
+    if nw_mcast_dst == mcast_ip_addr:
+      mtree1_switches = []
+      if len(self.mtrees.keys()) == 2:
+        mtree1_switches = [10,11,13,12]
+      else:
+        mtree1_switches = [7,6,5,4]
+        
+      return self._setup_mtree1(nw_src, nw_mcast_dst, inport,mtree1_switches)
+    elif nw_mcast_dst == mcast_ip_addr2:
+      mtree2_switches = []
+      if len(self.mtrees.keys()) == 2:
+        mtree2_switches = [10,14,15]
+        
+      return self._setup_mtree2(nw_src, nw_mcast_dst, inport,mtree2_switches)
+    
+    
+  def _setup_mtree1(self,nw_src,nw_mcast_dst,inport,mtree_switches):
+    
     # mcast address = 10.10.10.10, src = 10.0.0.3, dst1=10.0.0.1, dst2 = 10.0.0.2
     # tree: 
     #       h1 -- s4
     #                \ s6 --- s7 --- h3              
     #       h2 -- s5 /
-    #h1 = IPAddr("10.0.0.1")
-    #h2 = IPAddr("10.0.0.2")
-    #h3 = IPAddr("10.0.0.3")
-    #mcast_mac_addr = EthAddr("10:10:10:10:10:10")
-    #mcast_mac_addr = EthAddr("10-10-10-10-10-10")
     
     
     # s7: install (src=10.0.0.3, dst = 10.10.10.10, outport)
-    switch_id = 7
+    switch_id = mtree_switches[0]
     s7_ports = dpg_utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h1)
-    #s7_ports = []
-    #s7_ports.append(prt)
     self._install_basic_mcast_flow(switch_id, nw_src,s7_ports,nw_mcast_dst)
     self.arpTable[switch_id][nw_mcast_dst] = Entry(s7_ports,mcast_mac_addr)
     
     
     # s6: install (src=10.0.0.3, dst = 10.10.10.10, outport_list) or
     # s6: install (src=10.0.0.3, dst = 10.0.0.1, outport),  (src=10.0.0.3, dst = 10.0.0.6, outport) 
-    switch_id = 6
+    switch_id = mtree_switches[1]
     h1_prts = dpg_utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h1)
     h2_prts = dpg_utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h2)
     s6_ports = h1_prts + h2_prts
     self._install_basic_mcast_flow(switch_id, nw_src, s6_ports, nw_mcast_dst)
     self.arpTable[switch_id][nw_mcast_dst] = Entry(s6_ports,mcast_mac_addr)
-    #self._update_arp_table_for_mtree(eth_packet,arp_packet,switch_id, inport,nw_mcast_dst, prt, mcast_mac_addr)
-    #find port to s7
-    #p3 = dpg_utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h3)
-    #self._update_arp_table_for_mtree(eth_packet,arp_packet,switch_id, inport,nw_mcast_dst, p3, mcast_mac_addr)
     
     # s5: rewrite destination address from 10.10.10.10 to h2 (10.0.0.2)
-    switch_id = 5
+    switch_id = mtree_switches[2]
     s5_ports = dpg_utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h2)
-    #s5_ports = []
-    #s5_ports.append(p5)
     self._install_rewrite_dst_mcast_flow(switch_id, nw_src, s5_ports, nw_mcast_dst, h2)
     self.arpTable[switch_id][nw_mcast_dst] = Entry(s5_ports,mcast_mac_addr)
     
     # s4: rewrite destination address from 10.10.10.10 to h1 (10.0.0.1)
-    switch_id = 4
+    switch_id = mtree_switches[3]
     s4_ports = dpg_utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h1)
-    #s4_ports = []
-    #s4_ports.append(p4)
     self._install_rewrite_dst_mcast_flow(switch_id, nw_src, s4_ports, nw_mcast_dst, h1)  
     self.arpTable[switch_id][nw_mcast_dst] = Entry(s4_ports,mcast_mac_addr) 
     
@@ -533,9 +547,45 @@ class l3_arp_pcount_switch (EventMixin):
     installed_mtrees.append(nw_mcast_dst)
     
     u_switch_id,d_switch_ids = self._find_mcast_measure_points(nw_src,mcast_ip_addr)
-    #u_switch_id = 7
-    #d_switch_ids = [6,5,4]
-    #d_switch_ids = [5,4]
+    
+    return u_switch_id, d_switch_ids
+  
+  def _setup_mtree2(self,nw_src,nw_mcast_dst,inport,mtree_switches):
+    
+    # mcast address = 11.11.11.11, src = 10.0.0.4, dst1=10.0.0.2, dst2 = 10.0.0.7, dst3 = 10.0.0.8, dst4 = 10.0.0.5, dst5 = 10.0.0.6
+    # tree: 
+    #       h9
+    #       h7 - \
+    #       h8 -- s15
+    #                \ s10 --- h4               
+    #       h5 -- s14 /
+    #       h6 /
+    
+    
+    # s10: install (src=10.0.0.9, dst = 11.11.11.11, outport_list) 
+    switch_id = mtree_switches[0]
+    h8_prts = dpg_utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h8)
+    h6_prts = dpg_utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h6)
+    s10_ports = h8_prts + h6_prts
+    self._install_basic_mcast_flow(switch_id, nw_src, s10_ports, nw_mcast_dst)
+    self.arpTable[switch_id][nw_mcast_dst] = Entry(s10_ports,mcast_mac_addr)
+    
+    # s14: rewrite destination address from 11.11.11.11 to h5 and h6 
+    switch_id = mtree_switches[1]
+    s14_ports = dpg_utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h5)
+    self._install_rewrite_dst_mcast_flow(switch_id, nw_src, s14_ports, nw_mcast_dst, h5)
+    self.arpTable[switch_id][nw_mcast_dst] = Entry(s14_ports,mcast_mac_addr)
+    
+    # s15: rewrite destination address from 11.11.11.11 to h2,h7, and h8 
+    switch_id = mtree_switches[2]
+    s15_ports = dpg_utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h9)
+    self._install_rewrite_dst_mcast_flow(switch_id, nw_src, s15_ports, nw_mcast_dst, h9)  
+    self.arpTable[switch_id][nw_mcast_dst] = Entry(s15_ports,mcast_mac_addr) 
+    
+    global installed_mtrees
+    installed_mtrees.append(nw_mcast_dst)
+    
+    u_switch_id,d_switch_ids = self._find_mcast_measure_points(nw_src,mcast_ip_addr2)
     
     return u_switch_id, d_switch_ids
 
@@ -551,12 +601,12 @@ class l3_arp_pcount_switch (EventMixin):
       for measure_pnt in self.flow_measure_points[d_switch_id]:
         last_indx = len(measure_pnt) -1
       
-      if measure_pnt[last_indx-1] == nw_src and measure_pnt[last_indx] == mcast_ip_addr:
-        dstream_switches = list()
-        dstream_switches.append(d_switch_id)
-        dstream_switches = dstream_switches + measure_pnt[0:last_indx-2]
-        
-        return measure_pnt[last_indx-2],dstream_switches  #returns the upstream switch id 
+        if measure_pnt[last_indx-1] == nw_src and measure_pnt[last_indx] == mcast_ip_addr:
+          dstream_switches = list()
+          dstream_switches.append(d_switch_id)
+          dstream_switches = dstream_switches + measure_pnt[0:last_indx-2]
+          
+          return measure_pnt[last_indx-2],dstream_switches  #returns the upstream switch id 
       
     return -1,-1
   
@@ -591,15 +641,6 @@ class l3_arp_pcount_switch (EventMixin):
               self._send_arp_reply(packet, a, dpid, inport, self.arpTable[dpid][a.protodst].mac, self.arpTable[dpid][a.protodst].port)
             
             return
-          #  if a.protodst in installed_mtrees:
-          #    print "already setup mcast tree for s%s, inport=%s,dest=%s, just resending the ARP reply and skipping mcast setup." %(dpid,inport,a.protodst)
-          #    self._send_arp_reply(packet, a, dpid, inport, self.arpTable[dpid][a.protodst].mac, self.arpTable[dpid][a.protodst].port)
-          #    return
-              
-          #  log.info("skipping normal ARP Request code because ARP request is for multicast address %s" %(str(a.protodst)))
-         #   self._setup_mtree(a.protosrc,a.protodst,inport,a,packet)
-         #   self._setup_mtree_measure_pnts(a.protodst)
-         #   return
 
           # Learn or update port/MAC info for the SOURCE address 
           if a.protosrc in self.arpTable[dpid]:
