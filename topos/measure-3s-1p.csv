@@ -1,2 +1,2 @@
-#downstream-switch,src,dest,upstream-switch
-6,10.0.0.1,10.0.0.3,4
+#downstream-switch1,downstream-switch2, ..., upstream_switch,src,dest
+4,6,10.0.0.3,10.0.0.1
