@@ -24,8 +24,8 @@ from pox.core import core
 from pox.lib.recoco import Timer
 import pox
 log = core.getLogger("PCount_Session")
-#log = core.getLogger()
 
+from pox.lib.addresses import IPAddr,EthAddr
 from pox.lib.packet.ethernet import ethernet
 from pox.lib.packet.ipv4 import ipv4
 from pox.lib.packet.arp import arp
@@ -60,11 +60,12 @@ class PCountSession (EventMixin):
     self.flowTables = {} #this is a hack that saves us from queries each switch for their flow table)
  
     self.current_highest_priority_flow_num = of.OFP_DEFAULT_PRIORITY
- 
+    
+    self.arpTable = {}
  
  
     
-  def pcount_session(self,u_switch_id,d_switch_ids,strip_vlan_switch_ids,nw_src, nw_dst,flow_tables,window_size):
+  def pcount_session(self,u_switch_id,d_switch_ids,strip_vlan_switch_ids,mtree_dstream_hosts,nw_src, nw_dst,flow_tables,arpTable,window_size):
     """
     measure the packet loss for flow, f, between the upstream swtich and downstream for a specified window of time
     
@@ -78,11 +79,11 @@ class PCountSession (EventMixin):
     global global_vlan_id
     global_vlan_id+=1
     self.flowTables = flow_tables
+    self.arpTable = arpTable
 
     current_time = time.strftime("%a, %d %b %Y %H:%M:%S", time.localtime())
     log.debug("(%s) started pcount session between switches (s%s,%s) and flow (src=%s,dest=%s,vlan_id=%s) lasting %s seconds" %(current_time,u_switch_id,d_switch_ids,nw_src,nw_dst,global_vlan_id,window_size)) 
-    print "(%s) started pcount session between switches (s%s,%s) and flow (src=%s,dest=%s,vlan_id=%s) lasting %s seconds" %(current_time,u_switch_id,d_switch_ids,nw_src,nw_dst,global_vlan_id,window_size)    
-    self._start_pcount_session(u_switch_id, d_switch_ids,strip_vlan_switch_ids, nw_src, nw_dst,global_vlan_id)
+    self._start_pcount_session(u_switch_id, d_switch_ids,strip_vlan_switch_ids,mtree_dstream_hosts, nw_src, nw_dst,global_vlan_id)
 
     
     
@@ -110,13 +111,13 @@ class PCountSession (EventMixin):
           con.send(of.ofp_stats_request(body=of.ofp_flow_stats_request(match=match)))
           #con.send(of.ofp_stats_request(body=of.ofp_flow_stats_request()))  #DPG: temp for debugging so we can see all flow table values
 
-  def _start_pcount_session(self,u_switch_id,d_switch_ids,strip_vlan_switch_ids,nw_src,nw_dst,vlan_id):
+  def _start_pcount_session(self,u_switch_id,d_switch_ids,strip_vlan_switch_ids,mtree_dstream_hosts,nw_src,nw_dst,vlan_id):
     
     self.current_highest_priority_flow_num+=1
     
     # (1): count and tag all packets at d that match the VLAN tag
     for d_switch_id in d_switch_ids:
-      self._start_pcount_downstream(d_switch_id, strip_vlan_switch_ids, vlan_id, nw_src, nw_dst)
+      self._start_pcount_downstream(d_switch_id, strip_vlan_switch_ids,mtree_dstream_hosts,vlan_id, nw_src, nw_dst)
     
     # (2): tag and count all packets at upstream switch, u
     self._start_pcount_upstream(u_switch_id,vlan_id, nw_src, nw_dst)  
@@ -224,12 +225,9 @@ class PCountSession (EventMixin):
        
     # Hack: just use the network source and destination to create a new flow, rather than make a copy
     msg = of.ofp_flow_mod(command=of.OFPFC_ADD,
-                               # idle_timeout=FLOW_IDLE_TIMEOUT,
-                               # hard_timeout=of.OFP_FLOW_PERMANENT,
                                 priority=flow_priority)
         
     msg.match = of.ofp_match(dl_type = ethernet.IP_TYPE, nw_src=nw_src, nw_dst = nw_dst)
-    #prt = self._find_nonvlan_flow_outport(switch_id, nw_src, nw_dst)   #TODO: fix
     
     prts = dpg_utils.find_nonvlan_flow_outport(self.flowTables, switch_id, nw_src, nw_dst)
     
@@ -243,9 +241,20 @@ class PCountSession (EventMixin):
     current_time = time.strftime("%a, %d %b %Y %H:%M:%S", time.localtime())
     log.debug("\t * (%s) reinstalled basic flow (src=%s,dest=%s,priority=%s) at s%s" % (current_time,nw_src,nw_dst,flow_priority,switch_id))
   
- 
 
-  def _start_pcount_downstream(self,d_switch_id,strip_vlan_switch_ids,vlan_id,nw_src,nw_dst):
+  def _add_rewrite_mcast_dst_action(self,switch_id,msg,nw_mcast_dst,new_ip_dsts):
+    
+    for new_ip_dst in new_ip_dsts:
+      action = of.ofp_action_nw_addr.set_dst(IPAddr(new_ip_dst))
+      msg.actions.append(action)
+    
+      new_mac_addr = self.arpTable[switch_id][new_ip_dst].mac
+      l2_action = of.ofp_action_dl_addr.set_dst(new_mac_addr)
+      msg.actions.append(l2_action)
+        
+     
+
+  def _start_pcount_downstream(self,d_switch_id,strip_vlan_switch_ids,mtree_dstream_hosts,vlan_id,nw_src,nw_dst):
     """
       start tagging and counting packets at the upstream switch
     """
@@ -257,14 +266,17 @@ class PCountSession (EventMixin):
       
     # Hack: just use the network source and destination to create a new flow, rather than make a copy
     msg = of.ofp_flow_mod(command=of.OFPFC_ADD,
-                               # idle_timeout=FLOW_IDLE_TIMEOUT,
-                               # hard_timeout=of.OFP_FLOW_PERMANENT,
                                 priority=flow_priority)
     
     msg.match = of.ofp_match(dl_type = ethernet.IP_TYPE, nw_src=nw_src, nw_dst = nw_dst,dl_vlan=vlan_id) 
     
+    
+    if mtree_dstream_hosts.has_key((nw_src,nw_dst,d_switch_id)):
+      new_ip_dsts = mtree_dstream_hosts[(nw_src,nw_dst,d_switch_id)]
+      self._add_rewrite_mcast_dst_action(d_switch_id, msg, nw_dst, new_ip_dsts)
+    
     if d_switch_id in strip_vlan_switch_ids:
-      msg.actions.append(of.ofp_action_header(type=of.OFPAT_STRIP_VLAN))  #DPG: temp for debugging
+      msg.actions.append(of.ofp_action_header(type=of.OFPAT_STRIP_VLAN))  
 
     for p in prts:
       msg.actions.append(of.ofp_action_output(port = p))
@@ -292,17 +304,12 @@ class PCountSession (EventMixin):
       
     # Hack: just use the network source and destination to create a new flow, rather than make a copy
     msg = of.ofp_flow_mod(command=of.OFPFC_ADD,
-                              #  idle_timeout=FLOW_IDLE_TIMEOUT,
-                              #  hard_timeout=of.OFP_FLOW_PERMANENT,
                                 priority=flow_priority)
-                               # action=of.ofp_action_output(port = prt)) 
         
     msg.match = of.ofp_match(dl_type = ethernet.IP_TYPE, nw_src=nw_src, nw_dst = nw_dst) 
   
   # (2):  e' tags packets using the VLAN field
   
-    #msg.actions.append(of.ofp_action_output(port = prt))
-    
     current_time = time.strftime("%a, %d %b %Y %H:%M:%S", time.localtime())
     log.debug( "\t * (%s) installed tagging flow at s%s (src=%s,dst=%s,set vid = %s)" %(current_time,u_switch_id,nw_src,nw_dst,vlan_id))
     vlan_action = of.ofp_action_vlan_vid()
