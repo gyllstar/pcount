@@ -242,6 +242,17 @@ class PCountSession (EventMixin):
     log.debug("\t * (%s) reinstalled basic flow (src=%s,dest=%s,priority=%s) at s%s" % (current_time,nw_src,nw_dst,flow_priority,switch_id))
   
 
+  def _add_rewrite_single_mcast_dst_action(self,switch_id,msg,nw_mcast_dst,new_ip_dst):
+    
+    action = of.ofp_action_nw_addr.set_dst(IPAddr(new_ip_dst))
+    msg.actions.append(action)
+  
+    new_mac_addr = self.arpTable[switch_id][new_ip_dst].mac
+    l2_action = of.ofp_action_dl_addr.set_dst(new_mac_addr)
+    msg.actions.append(l2_action)
+
+
+  # DPG: problably can delete this function
   def _add_rewrite_mcast_dst_action(self,switch_id,msg,nw_mcast_dst,new_ip_dsts):
     
     for new_ip_dst in new_ip_dsts:
@@ -252,34 +263,47 @@ class PCountSession (EventMixin):
       l2_action = of.ofp_action_dl_addr.set_dst(new_mac_addr)
       msg.actions.append(l2_action)
         
-     
+
 
   def _start_pcount_downstream(self,d_switch_id,strip_vlan_switch_ids,mtree_dstream_hosts,vlan_id,nw_src,nw_dst):
     """
-      start tagging and counting packets at the upstream switch
+      start tagging and counting packets at the downstream switch
     """
     # (1): create a copy of the flow entry, e, at switch d.  call this copy e''.  e''  counts packets using the VLAN field
     
     flow_priority = self.current_highest_priority_flow_num
     
-    prts = dpg_utils.find_nonvlan_flow_outport(self.flowTables, d_switch_id, nw_src, nw_dst)
-      
     # Hack: just use the network source and destination to create a new flow, rather than make a copy
     msg = of.ofp_flow_mod(command=of.OFPFC_ADD,
                                 priority=flow_priority)
     
     msg.match = of.ofp_match(dl_type = ethernet.IP_TYPE, nw_src=nw_src, nw_dst = nw_dst,dl_vlan=vlan_id) 
     
+    # this is where the action list should be sequential (one destination at-a-time) so the correct version of each modified packet is output when for leaf switches with > 1 adjacent downstream switch
     
     if mtree_dstream_hosts.has_key((nw_src,nw_dst,d_switch_id)):
       new_ip_dsts = mtree_dstream_hosts[(nw_src,nw_dst,d_switch_id)]
-      self._add_rewrite_mcast_dst_action(d_switch_id, msg, nw_dst, new_ip_dsts)
+      
+      for new_ip_dst in new_ip_dsts:
+        self._add_rewrite_single_mcast_dst_action(d_switch_id, msg, nw_dst, new_ip_dst)
+        
     
-    if d_switch_id in strip_vlan_switch_ids:
-      msg.actions.append(of.ofp_action_header(type=of.OFPAT_STRIP_VLAN))  
+        if d_switch_id in strip_vlan_switch_ids:
+          msg.actions.append(of.ofp_action_header(type=of.OFPAT_STRIP_VLAN))  
+        
+        prts = dpg_utils.find_nonvlan_flow_outport(self.flowTables, d_switch_id, nw_src, new_ip_dst)
+        
+        for p in prts:
+          msg.actions.append(of.ofp_action_output(port = p))
 
-    for p in prts:
-      msg.actions.append(of.ofp_action_output(port = p))
+    else:
+      if d_switch_id in strip_vlan_switch_ids:
+        msg.actions.append(of.ofp_action_header(type=of.OFPAT_STRIP_VLAN))  
+        
+      prts = dpg_utils.find_nonvlan_flow_outport(self.flowTables, d_switch_id, nw_src, nw_dst)
+      
+      for p in prts:
+        msg.actions.append(of.ofp_action_output(port = p))
 
     # (2): install e'' at d with a higher priority than e
     current_time = time.strftime("%a, %d %b %Y %H:%M:%S", time.localtime())

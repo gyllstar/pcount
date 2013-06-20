@@ -378,8 +378,6 @@ class l3_arp_pcount_switch (EventMixin):
 
 
         msg = of.ofp_flow_mod(command=of.OFPFC_ADD,
-                               # idle_timeout=FLOW_IDLE_TIMEOUT,
-                               # hard_timeout=of.OFP_FLOW_PERMANENT,
                                 buffer_id=event.ofp.buffer_id,
                                 action=of.ofp_action_output(port = prt)) 
         
@@ -401,22 +399,37 @@ class l3_arp_pcount_switch (EventMixin):
   def _is_mcast_address(self,dst_ip_address):
     return self.mtrees.has_key(dst_ip_address)
   
-  
   def _install_rewrite_dst_mcast_flow(self,switch_id,nw_src,ports,nw_mcast_dst,new_dst):
   
     msg = of.ofp_flow_mod(command=of.OFPFC_ADD)
     msg.match = of.ofp_match(dl_type = ethernet.IP_TYPE, nw_src=nw_src, nw_dst = nw_mcast_dst)
     
-    action = of.ofp_action_nw_addr.set_dst(IPAddr(new_dst))
-    msg.actions.append(action)
-    
-    new_mac_addr = self.arpTable[switch_id][new_dst].mac
-    l2_action = of.ofp_action_dl_addr.set_dst(new_mac_addr)
-    msg.actions.append(l2_action)
+    if isinstance(new_dst,list):
+      
+      # this part is only executed if multiple addresses need to be rewriteen (works because OF switches execute actions in order, meaning that each copy of the packet
+      # is output before the next destination address rewrite takes place)
+      for dst in new_dst:
+        action = of.ofp_action_nw_addr.set_dst(IPAddr(dst))
+        msg.actions.append(action)
         
-    for prt in ports:
-      msg.actions.append(of.ofp_action_output(port = prt))
-    
+        new_mac_addr = self.arpTable[switch_id][dst].mac
+        l2_action = of.ofp_action_dl_addr.set_dst(new_mac_addr)
+        msg.actions.append(l2_action)
+        
+        for prt in ports[dst]:
+          msg.actions.append(of.ofp_action_output(port = prt))
+        
+    else:
+      action = of.ofp_action_nw_addr.set_dst(IPAddr(new_dst))
+      msg.actions.append(action)
+      
+      new_mac_addr = self.arpTable[switch_id][new_dst].mac
+      l2_action = of.ofp_action_dl_addr.set_dst(new_mac_addr)
+      msg.actions.append(l2_action)
+          
+      for prt in ports:
+        msg.actions.append(of.ofp_action_output(port = prt))
+      
     dpg_utils.send_msg_to_switch(msg, switch_id)
     self._cache_flow_table_entry(switch_id, msg)
     
@@ -444,25 +457,18 @@ class l3_arp_pcount_switch (EventMixin):
     
     r.protodst = arp_packet.protosrc
     r.protosrc = arp_packet.protodst
-    #r.protodst = arp_packet.protodst
-    #r.protosrc = arp_packet.protosrc  
     r.hwdst = arp_packet.hwsrc  
     r.hwsrc = mcast_mac_addr
-    #r.hwdst = mcast_mac_addr
-    #r.hwsrc = arp_packet.hwsrc  
     
     e = ethernet(type=eth_packet.type, src=r.hwsrc, dst=arp_packet.hwsrc)
     e.set_payload(r)
-    #log.debug("^^^^^^^\t r.protosrc=%s,r.protodst=%s,r.hwsrc=%s,r.hwdst=%s, outport-param=%s" %(r.protosrc,r.protodst,r.hwsrc,r.hwdst,outport))
     log.debug("%i %i answering ARP request from src=%s to dst=%s" % (switch_id,inport,str(r.protosrc),str(r.protodst)))
     msg = of.ofp_packet_out()
     msg.data = e.pack()
     msg.actions.append(of.ofp_action_output(port = of.OFPP_IN_PORT))
-    #msg.actions.append(of.ofp_action_output(port = outport))
     msg.in_port = inport
     
     dpg_utils.send_msg_to_switch(msg, switch_id)
-    #event.connection.send(msg)
     
     
   
@@ -568,20 +574,32 @@ class l3_arp_pcount_switch (EventMixin):
     
     # s14: rewrite destination address from 11.11.11.11 to h5 and h6 
     switch_id = mtree_switches[1]
-    s14_ports = dpg_utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h5)
-    self._install_rewrite_dst_mcast_flow(switch_id, nw_src, s14_ports, nw_mcast_dst, h5)
+    #s14_ports = dpg_utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h5)
+    #self._install_rewrite_dst_mcast_flow(switch_id, nw_src, s14_ports, nw_mcast_dst, h5)
+    #self.mtree_dstream_hosts[(nw_src,nw_mcast_dst,switch_id)] = [h5]
+    h5_ports = dpg_utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h5)
+    h6_ports = dpg_utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h6)
+    s14_ports = {h5:h5_ports, h6:h6_ports}
+    self._install_rewrite_dst_mcast_flow(switch_id, nw_src, s14_ports, nw_mcast_dst, [h5,h6])
+    self.mtree_dstream_hosts[(nw_src,nw_mcast_dst,switch_id)] = [h5,h6]
     self.arpTable[switch_id][nw_mcast_dst] = Entry(s14_ports,mcast_mac_addr)
-    self.mtree_dstream_hosts[(nw_src,nw_mcast_dst,switch_id)] = [h5]
+
     
     # s15: rewrite destination address from 11.11.11.11 to h2,h7, and h8 
     switch_id = mtree_switches[2]
     h7_ports = dpg_utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h7)
     h8_ports = dpg_utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h8)
     h9_ports = dpg_utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h9)
-    s15_ports = h7_ports + h8_ports + h9_ports
-    self._install_rewrite_dst_mcast_flow(switch_id, nw_src, s15_ports, nw_mcast_dst, h9)  
+    #s15_ports = h7_ports + h8_ports + h9_ports
+    s15_ports = {}
+    s15_ports[h7] = h7_ports
+    s15_ports[h8] = h8_ports
+    s15_ports[h9] = h9_ports
+    self._install_rewrite_dst_mcast_flow(switch_id, nw_src, s15_ports, nw_mcast_dst, [h7,h8,h9])  
+    #self._install_rewrite_dst_mcast_flow(switch_id, nw_src, s15_ports, nw_mcast_dst, [h7])  
+    #self.mtree_dstream_hosts[(nw_src,nw_mcast_dst,switch_id)] = [h7]
+    self.mtree_dstream_hosts[(nw_src,nw_mcast_dst,switch_id)] = [h7,h8,h9]
     self.arpTable[switch_id][nw_mcast_dst] = Entry(s15_ports,mcast_mac_addr) 
-    self.mtree_dstream_hosts[(nw_src,nw_mcast_dst,switch_id)] = [h9]
     
     global installed_mtrees
     installed_mtrees.append(nw_mcast_dst)
