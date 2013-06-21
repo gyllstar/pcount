@@ -29,22 +29,13 @@ from pox.lib.addresses import IPAddr,EthAddr
 from pox.lib.packet.ethernet import ethernet
 from pox.lib.packet.ipv4 import ipv4
 from pox.lib.packet.arp import arp
-import dpg_utils
+import dpg_utils, l3_arp_pcount
 
 import pox.openflow.libopenflow_01 as of
 
 from pox.lib.revent import *
 
 import time
-
-# Timeout for flows (in seconds)
-FLOW_IDLE_TIMEOUT = 1200   #20 minutes
-
-# Timeout for ARP entries
-ARP_TIMEOUT = 6000 * 2
-
-PCOUNT_ON=True
-PROPOGATION_DELAY=1 #seconds
 
 global_vlan_id=0
 
@@ -192,7 +183,7 @@ class PCountSession (EventMixin):
     self._reinstall_basic_flow_entry(u_switch_id, nw_src, nw_dst, new_flow_priority)
 
     # (2): wait for time proportional to transit time between u and d to turn counting off at d
-    time.sleep(PROPOGATION_DELAY)
+    time.sleep(l3_arp_pcount.PROPOGATION_DELAY)
     
     # (3) query u and d for packet counts
     self._query_tagging_switch(u_switch_id, vlan_id,nw_src,nw_dst)
@@ -251,18 +242,6 @@ class PCountSession (EventMixin):
     l2_action = of.ofp_action_dl_addr.set_dst(new_mac_addr)
     msg.actions.append(l2_action)
 
-
-  # DPG: problably can delete this function
-  def _add_rewrite_mcast_dst_action(self,switch_id,msg,nw_mcast_dst,new_ip_dsts):
-    
-    for new_ip_dst in new_ip_dsts:
-      action = of.ofp_action_nw_addr.set_dst(IPAddr(new_ip_dst))
-      msg.actions.append(action)
-    
-      new_mac_addr = self.arpTable[switch_id][new_ip_dst].mac
-      l2_action = of.ofp_action_dl_addr.set_dst(new_mac_addr)
-      msg.actions.append(l2_action)
-        
 
 
   def _start_pcount_downstream(self,d_switch_id,strip_vlan_switch_ids,mtree_dstream_hosts,vlan_id,nw_src,nw_dst):

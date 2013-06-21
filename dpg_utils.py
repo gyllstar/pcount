@@ -33,8 +33,6 @@ def send_msg_to_switch(msg,switch_id):
 
 def _is_vlan_flow_entry(flow_entry):
   
-
-    
   for flow_entry in self.flowTables[u_switch_id]:
     if flow_entry.match.nw_src == nw_src and flow_entry.match.nw_dst == nw_dst:
       for flow_action in flow_entry.actions:

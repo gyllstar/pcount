@@ -49,15 +49,7 @@ from pox.lib.revent import *
 
 import time
 
-# Timeout for flows
-FLOW_IDLE_TIMEOUT = 1200
 
-# Timeout for ARP entries
-ARP_TIMEOUT = 6000 * 2
-
-# in seconds
-PCOUNT_WINDOW_SIZE=10  
-PCOUNT_CALL_FREQUENCY=PCOUNT_WINDOW_SIZE+5
 
 measure_pnts_file_str="measure-6s-2d-2p.csv"
 #measure_pnts_file_str="measure-4s-3d-1p.csv"
@@ -73,10 +65,16 @@ mtree_file_str="mtree-6s-2t.csv"
 #mtree_file_str="mtree-4s-1t.csv"
 
 
-IS_MTREE_EXPT=False
 installed_mtrees=[] #list of multicast addresses with an mtree already installed
 
+# Timeout for ARP entries
+ARP_TIMEOUT = 6000 * 2
 
+
+# in seconds
+PCOUNT_WINDOW_SIZE=10  
+PCOUNT_CALL_FREQUENCY=PCOUNT_WINDOW_SIZE+5
+PROPOGATION_DELAY=1 #seconds
 
 h1 = IPAddr("10.0.0.1")
 h2 = IPAddr("10.0.0.2")
@@ -87,7 +85,7 @@ h6 = IPAddr("10.0.0.6")
 h7 = IPAddr("10.0.0.7")
 h8 = IPAddr("10.0.0.8")
 h9 = IPAddr("10.0.0.9")
-mcast_ip_addr = IPAddr("10.10.10.10")
+mcast_ip_addr1 = IPAddr("10.10.10.10")
 mcast_mac_addr = EthAddr("10:10:10:10:10:10")
 
 mcast_ip_addr2 = IPAddr("10.11.11.11")
@@ -116,7 +114,8 @@ class Entry (object):
     return not self.__eq__(other)
 
   def isExpired (self):
-    return time.time() > self.timeout
+    return False #DPG: modified this because for our application (power grid) the IP addresses will not change and therefore will not expire
+    #return time.time() > self.timeout
 
 
 
@@ -136,7 +135,7 @@ class l3_arp_pcount_switch (EventMixin):
     self.flow_measure_points={}  # note this really ought to be (nw_src,nw_dst) -> (d_switch_id2, d_switch_id3, .... , u_switch_id)
     
     #multicast address -> [src,dest1,dest2,...]
-    self.mtrees = {}
+    self.mcast_groups = {}
     
     # (src-ip,dst-ip) -> [switch_id1, switch_id2, ...]
     self.flow_strip_vlan_switch_ids = {}
@@ -167,9 +166,6 @@ class l3_arp_pcount_switch (EventMixin):
       #os._exit(0)
       return
     
-    global IS_MTREE_EXPT
-    IS_MTREE_EXPT = True
-    
     #file structure: multicast address,src,dest1,dest2,...
     for line_list in csv.reader(open(mtree_file)):
       val_list = list()
@@ -187,13 +183,13 @@ class l3_arp_pcount_switch (EventMixin):
       
       key = IPAddr(line_list[0])
       
-      if self.mtrees.has_key(key):
-        entry = self.mtrees[key]
+      if self.mcast_groups.has_key(key):
+        entry = self.mcast_groups[key]
         entry.append(val_list)
       else:
         entry = list()
         entry.append(val_list)
-        self.mtrees[key] = entry
+        self.mcast_groups[key] = entry
       
   def _read_flow_measure_points_file(self):
     
@@ -224,9 +220,9 @@ class l3_arp_pcount_switch (EventMixin):
       val_list.insert(cnt, dst_ip) 
       
       # egregious hard-coding of the most downstream node 
-      if src_ip == h3 and dst_ip == mcast_ip_addr and key<10:
+      if src_ip == h3 and dst_ip == mcast_ip_addr1 and key<10:
         self.flow_strip_vlan_switch_ids[(src_ip,dst_ip)] = [4,5]   # should be h1 and h2 adjacent switches
-      elif src_ip == h3 and dst_ip == mcast_ip_addr and key>10:
+      elif src_ip == h3 and dst_ip == mcast_ip_addr1 and key>10:
         self.flow_strip_vlan_switch_ids[(src_ip,dst_ip)] = [12,13]   
       elif src_ip == h4 and dst_ip == mcast_ip_addr2:
         self.flow_strip_vlan_switch_ids[(src_ip,dst_ip)] = [14,15]
@@ -267,9 +263,6 @@ class l3_arp_pcount_switch (EventMixin):
 
     
   def _check_start_pcount(self,d_switch_id,nw_src,nw_dst):
-    
-    #if IS_MTREE_EXPT:
-    #  return False,-1,-1
     
     if not self.flow_measure_points.has_key(d_switch_id):
       return False,-1,-1
@@ -397,7 +390,7 @@ class l3_arp_pcount_switch (EventMixin):
       log.error("no ARP entry at switch s%s for dst=%s" %(dpid,dstaddr))
         
   def _is_mcast_address(self,dst_ip_address):
-    return self.mtrees.has_key(dst_ip_address)
+    return self.mcast_groups.has_key(dst_ip_address)
   
   def _install_rewrite_dst_mcast_flow(self,switch_id,nw_src,ports,nw_mcast_dst,new_dst):
   
@@ -488,9 +481,9 @@ class l3_arp_pcount_switch (EventMixin):
   
   def _setup_mtree(self,nw_src,nw_mcast_dst,inport):
     
-    if nw_mcast_dst == mcast_ip_addr:
+    if nw_mcast_dst == mcast_ip_addr1:
       mtree1_switches = []
-      if len(self.mtrees.keys()) == 2:
+      if len(self.mcast_groups.keys()) == 2:
         mtree1_switches = [10,11,13,12]
       else:
         mtree1_switches = [7,6,5,4]
@@ -498,12 +491,14 @@ class l3_arp_pcount_switch (EventMixin):
       return self._setup_mtree1(nw_src, nw_mcast_dst, inport,mtree1_switches)
     elif nw_mcast_dst == mcast_ip_addr2:
       mtree2_switches = []
-      if len(self.mtrees.keys()) == 2:
+      if len(self.mcast_groups.keys()) == 2:
         mtree2_switches = [10,14,15]
         
       return self._setup_mtree2(nw_src, nw_mcast_dst, inport,mtree2_switches)
     
-    
+  
+  # should really use self.mcast_groups to determine which hosts are a part of the multicast group and tree
+  # should have some way to determine which hosts are downstream from a given switch, rather than hard coding this  
   def _setup_mtree1(self,nw_src,nw_mcast_dst,inport,mtree_switches):
     
     # mcast address = 10.10.10.10, src = 10.0.0.3, dst1=10.0.0.1, dst2 = 10.0.0.2
@@ -548,7 +543,7 @@ class l3_arp_pcount_switch (EventMixin):
     global installed_mtrees
     installed_mtrees.append(nw_mcast_dst)
     
-    u_switch_id,d_switch_ids = self._find_mcast_measure_points(nw_src,mcast_ip_addr)
+    u_switch_id,d_switch_ids = self._find_mcast_measure_points(nw_src,mcast_ip_addr1)
     
     return u_switch_id, d_switch_ids
   
@@ -609,18 +604,14 @@ class l3_arp_pcount_switch (EventMixin):
     return u_switch_id, d_switch_ids
 
   
-  def _find_mcast_measure_points(self, nw_src,mcast_ip_addr):
-    
-    #print "^^^^^^^^^^^^^^^^^^^^^ DPG: TODO IMPLEMENT l3_arp_pcount._find_measurement_points()"
-        # dict.  d_switch_id1 --> list w/ entries (d_switch_id2, d_switch_id3, .... , u_switch_id,nw_src,nw_dst)
-    #self.flow_measure_points={}  
+  def _find_mcast_measure_points(self, nw_src,mcast_ip_addr1):
     
     for d_switch_id in self.flow_measure_points.keys():
     
       for measure_pnt in self.flow_measure_points[d_switch_id]:
         last_indx = len(measure_pnt) -1
       
-        if measure_pnt[last_indx-1] == nw_src and measure_pnt[last_indx] == mcast_ip_addr:
+        if measure_pnt[last_indx-1] == nw_src and measure_pnt[last_indx] == mcast_ip_addr1:
           dstream_switches = list()
           dstream_switches.append(d_switch_id)
           dstream_switches = dstream_switches + measure_pnt[0:last_indx-2]
@@ -631,14 +622,6 @@ class l3_arp_pcount_switch (EventMixin):
   
   def _handle_arp_PacketIn(self,event,packet,dpid,inport):
     a = packet.next  # 'a' seems to be an IP packet (or actually it's an ARP packet)
-    
-    #dpg code here
-   # if a.opcode == arp.REPLY:
-   #   log.debug("%i %i ARP %s sent by %s => (IP=%s,MAC=%s)", dpid, inport,{arp.REQUEST:"request",arp.REPLY:"reply"}.get(a.opcode,
-   #    'op:%i' % (a.opcode,)), str(a.protosrc), str(a.protodst),str(a.hwdst))
-   # else:
-   #   log.debug("%i %i ARP %s %s => %s", dpid, inport,{arp.REQUEST:"request",arp.REPLY:"reply"}.get(a.opcode,
-   #    'op:%i' % (a.opcode,)), str(a.protosrc), str(a.protodst))
     
     log.debug("%i %i ARP %s %s => %s", dpid, inport,{arp.REQUEST:"request",arp.REPLY:"reply"}.get(a.opcode,
        'op:%i' % (a.opcode,)), str(a.protosrc), str(a.protodst))
@@ -679,12 +662,6 @@ class l3_arp_pcount_switch (EventMixin):
               if not self.arpTable[dpid][a.protodst].isExpired():
                 # .. and it's relatively current, so we'll reply ourselves
                 
-                #dpg
-                #if self.arpTable[dpid][a.protodst].mac.is_multicast():
-                #  print "mac is multicast, exiting prematurely from ARP request for debugging purposes."
-                  #should create multiple arp replies?
-                #  return
-
                 r = arp()
                 r.hwtype = a.hwtype
                 r.prototype = a.prototype
@@ -753,18 +730,7 @@ class l3_arp_pcount_switch (EventMixin):
     for key, val in self.pcount_results.items():
       w.writerow([key, val])
     
-    #print self.pcount_results
-    
-    
-#    file = "results/current/pcount-s2.txt" 
-#    output = open(file, 'w')
-#    output.write("# " + alg + ";" + time.strftime("%a, %d %b %Y %H:%M:%S", time.localtime())+ "\n")
-#    output.write("# Number Nodes \t Number PMUs \t Number Observed \t Number Unobserved \t Number S2 Rounds \t Placement \n")
-#    output.write(outputStr + "\n")
-#    print "wrote results to file = %s \n" %(file)
-#    output.close()
-    
-    
+
   def _record_pcount_value(self,vlan_id,nw_src,nw_dst,switch_id,packet_count,is_upstream,total_tag_count_switches):
     # index of 0 is for the upstream value and index of 1 is for the downstream value
     
@@ -841,7 +807,7 @@ class l3_arp_pcount_switch (EventMixin):
       is_flow_counting_switch = self._is_flow_counting_switch(switch_id, nw_src, nw_dst)
       
 
-      #if dpg_verbose_output and nw_dst == mcast_ip_addr:
+      #if dpg_verbose_output and nw_dst == mcast_ip_addr1:
       #if dpg_verbose_output and nw_src == h3:
       #if dpg_verbose_output and nw_src == h3 and nw_dst == h1:
       if dpg_verbose_output:
