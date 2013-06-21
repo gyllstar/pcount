@@ -1,0 +1,25 @@
+
+
+LIMITATIONS
+	
+	1. For a given flow, defined as (src_ip, dst_ips), our implementation assumes only pcount session takes place.  This means that only a single set of measurements can take place at a time.
+		-> This seems like a minor shortcoming because we can always count packet along switches corresponding to the flow
+	
+	2. Running an experiment is very manual.  It requires:
+		(a) emulating the correct topology w/in Mininnet, with the desired link loss probability, and correct remote IP address of the controller 
+		(b) starting the controller outside the VM 
+		(c) making sure that the pingall() run w/in Mininet is successful across all hosts so the flow tables are properly setup
+		(d) manually running the ping command to initiate the pcount session
+
+	3. Requires that the flow tables between all hosts that will be used in a PCount session are setup
+	
+	4. Multicast trees are hard-coded.
+
+HACKS
+
+	1. Hard-code the multicast trees:
+		- in _setup_mtree(), we should really use self.mcast_groups to determine which hosts are a part of the multicast group and tree
+  		- need a function that computes which hosts are downstream from a given switch, rather than hard coding this  
+
+	2. Rather than query the switches for their flow table state, I keep track of each switch's flow table at the controller.  This is clearly not scalable.
+
