@@ -37,6 +37,7 @@ from pox.lib.recoco import Timer
 import csv
 import os,sys
 import dpg_utils
+from pox.lib.util import dpidToStr
 
 from pox.lib.packet.ethernet import ethernet
 from pox.lib.packet.ipv4 import ipv4
@@ -51,7 +52,7 @@ import time
 
 
 
-measure_pnts_file_str="measure-6s-2d-2p.csv"
+#measure_pnts_file_str="measure-6s-2d-2p.csv"
 #measure_pnts_file_str="measure-4s-3d-1p.csv"
 #measure_pnts_file_str="measure-4s-2d-1p.csv"
 #measure_pnts_file_str="measure-4s-1p.csv"
@@ -59,7 +60,7 @@ measure_pnts_file_str="measure-6s-2d-2p.csv"
 #measure_pnts_file_str="measure-3s-1p.csv"
 #measure_pnts_file_str="measure-3s-2d-1p.csv"
 #measure_pnts_file_str="measure-2s-2p.csv"
-#measure_pnts_file_str="measure-2s-1p.csv"
+measure_pnts_file_str="measure-2s-1p.csv"
 
 mtree_file_str="mtree-6s-2t.csv"
 #mtree_file_str="mtree-4s-1t.csv"
@@ -91,6 +92,14 @@ mcast_mac_addr = EthAddr("10:10:10:10:10:10")
 mcast_ip_addr2 = IPAddr("10.11.11.11")
 mcast_mac_addr2 = EthAddr("11:11:11:11:11:11")
 
+# this count is supposed to correspond for (what is asssumed) to be the single outgoing link of the upsttream tagging switch
+actual_total_pkt_dropped = 0
+detect_total_pkt_dropped = 0
+actual_pkt_dropped_gt_threshold_time=-1
+detect_pkt_dropped_gt_threshold_time=-1
+
+pkt_dropped_curr_sampling_window = 0
+packets_dropped_threshold = 15
 
 class Entry (object):
   """
@@ -162,8 +171,6 @@ class l3_arp_pcount_switch (EventMixin):
     
     if num_switches != num_switches2:
       log.info("did not load mtree file ('%s') because not using a valid matching measurement points file (loaded '%s')" %(mtree_file_str,measure_pnts_file_str))
-      #print "exiting at _read_mtree_file(), eventually delete this line"
-      #os._exit(0)
       return
     
     #file structure: multicast address,src,dest1,dest2,...
@@ -258,7 +265,6 @@ class l3_arp_pcount_switch (EventMixin):
     
     strip_vlan_switch_ids = self.flow_strip_vlan_switch_ids[(nw_src,nw_dst)]
     
-    #Timer(PCOUNT_CALL_FREQUENCY,pcounter.pcount_session, args = [u_switch_id, d_switch_id,nw_src, nw_dst, self.flowTables, PCOUNT_WINDOW_SIZE])
     Timer(PCOUNT_CALL_FREQUENCY,pcounter.pcount_session, args = [u_switch_id, d_switch_ids,strip_vlan_switch_ids,self.mtree_dstream_hosts,nw_src, nw_dst, self.flowTables,self.arpTable, PCOUNT_WINDOW_SIZE],recurring=True)
 
     
@@ -697,8 +703,27 @@ class l3_arp_pcount_switch (EventMixin):
     event.connection.send(msg.pack())
 
 
+  def _handle_FlowRemoved (self, event):
+
+    num_dropped_pkts = event.ofp.packet_count
+    
+    global actual_total_pkt_dropped,actual_pkt_dropped_gt_threshold_time,pkt_dropped_curr_sampling_window
+    
+    actual_total_pkt_dropped += num_dropped_pkts
+    pkt_dropped_curr_sampling_window = num_dropped_pkts
+    
+    outStr = "Flow removed on s%s, packets dropped = %s, total packets droppped=%s" %(event.dpid,num_dropped_pkts,actual_total_pkt_dropped)
+    print outStr
+    
+    if actual_total_pkt_dropped > packets_dropped_threshold:
+      actual_pkt_dropped_gt_threshold_time = time.clock()
+      print "\n-------------------------------------------------------------------------------------------------------------------------------------------------------------"
+      print "Total packets ACTUALLY dropped = %s, exceeds threshold of %s.  Timestamp = %s" %(actual_total_pkt_dropped,packets_dropped_threshold,actual_pkt_dropped_gt_threshold_time)
+      print "-------------------------------------------------------------------------------------------------------------------------------------------------------------"
+    log.debug(outStr) 
 
   def _handle_PacketIn (self, event):
+    
     dpid = event.connection.dpid
     inport = event.port
     packet = event.parsed
@@ -719,7 +744,11 @@ class l3_arp_pcount_switch (EventMixin):
 
     elif isinstance(packet.next, arp):
       self._handle_arp_PacketIn(event,packet,dpid,inport)
-
+      
+    elif False:
+      # this is where i am putting my code to parse the ofp_flow_removed message from the temporary flow entry to drop packets to simulate link loss
+      self._handle_flow_removed_msg(event,packet,dpid)
+      
     return
 
   def _log_pcount_results(self):
@@ -760,10 +789,11 @@ class l3_arp_pcount_switch (EventMixin):
       
     if is_upstream:
       result_list.insert(2,switch_id)
+      global pkt_dropped_curr_sampling_window
+      packet_count += pkt_dropped_curr_sampling_window  #count the packets dropped by our flow entry at 'u' that drops packets to simulate a lossy link
+      pkt_dropped_curr_sampling_window=0
       result_list.insert(3, packet_count)
     else:
-      #result_list.insert(4,switch_id)
-      #result_list.insert(5, packet_count)
       result_list.append(switch_id)
       result_list.append(packet_count)
     
@@ -771,14 +801,35 @@ class l3_arp_pcount_switch (EventMixin):
     
     total = 2+ total_tag_count_switches * 2
     if len(result_list) == total: 
-      #print self.pcount_results
       
+      updatedTotalDrops = False
       for i in range(0,total_tag_count_switches-1):  
           offset = 3+ (2*i + 2) #5, 7, 9, 11
           diff = result_list[3] - result_list[offset]
           result_list.append(diff)
-      #diff = result_list[3] - result_list[5]
-      #result_list.insert(6,diff)
+          
+          if not updatedTotalDrops:
+            global detect_total_pkt_dropped
+            detect_total_pkt_dropped += diff
+            #pkt_dropped_curr_sampling_window=0
+            
+            print "detected tatal packets dropped = %s, actual packets dropped=%s" %(detect_total_pkt_dropped,actual_total_pkt_dropped)
+            
+            if detect_total_pkt_dropped > packets_dropped_threshold:
+              detect_pkt_dropped_gt_threshold_time = time.clock()
+              detect_time_lag = detect_pkt_dropped_gt_threshold_time - actual_pkt_dropped_gt_threshold_time
+              print "\n*************************************************************************************************************************************************************"
+              print "Total detected packets dropped = %s, exceeds threshold of %s.  Actual Time=%s, Detect Time = %s, Detection Time Lag = %s" %(detect_total_pkt_dropped,
+                                                                                                                                               packets_dropped_threshold,
+                                                                                                                                               actual_pkt_dropped_gt_threshold_time,
+                                                                                                                                               detect_pkt_dropped_gt_threshold_time,
+                                                                                                                                               detect_time_lag)
+              print "*************************************************************************************************************************************************************\n"
+              
+              updatedTotalDrops = True
+              result_list.append(detect_time_lag)
+              
+          
       self.pcount_results[vlan_id] = result_list
       self._log_pcount_results()
 
@@ -792,11 +843,6 @@ class l3_arp_pcount_switch (EventMixin):
     nw_src=-1
     nw_dst=-1
     
-    #DPG temp for debugging
-    dpg_verbose_output = False  
-    if dpg_verbose_output:
-      print "\n s%s  ********************************************************************************************************************************************************************" %(switch_id)
-    
     for flow_stat in event.stats: #note that event stats is a list of flow table entries
       
       nw_src = flow_stat.match.nw_src
@@ -807,18 +853,6 @@ class l3_arp_pcount_switch (EventMixin):
       is_flow_counting_switch = self._is_flow_counting_switch(switch_id, nw_src, nw_dst)
       
 
-      #if dpg_verbose_output and nw_dst == mcast_ip_addr1:
-      #if dpg_verbose_output and nw_src == h3:
-      #if dpg_verbose_output and nw_src == h3 and nw_dst == h1:
-      if dpg_verbose_output:
-        print "-------------------------------------------"
-        print flow_stat.match
-        print "Priority = %s, Packet Count = %s, duration (secs)=%s, duraction (nsecs)=%s" %(flow_stat.priority,flow_stat.packet_count,flow_stat.duration_sec,flow_stat.duration_nsec)
-        for flow_action in flow_stat.actions:
-          print "action: \n %s" %(flow_action.show())
-        print "-------------------------------------------\n"
-        
-      
       if not is_flow_tagging_switch and not is_flow_counting_switch:
         continue
       
@@ -839,13 +873,11 @@ class l3_arp_pcount_switch (EventMixin):
         self._record_pcount_value(vlan_id, nw_src, nw_dst, switch_id, packet_count,is_flow_tagging_switch, total)      
 
         log.debug("flow stat query result -- (s%s,src=%s,dst=%s,vid=%s) = %s; \t is_counter=%s, is_tagger=%s " %(switch_id,nw_src,nw_dst,vlan_id,packet_count,is_flow_counting_switch,is_flow_tagging_switch))
-        #print "flow stat query result -- (s%s,src=%s,dst=%s,vid=%s) = %s; \t is_counter=%s, is_tagger=%s " %(switch_id,nw_src,nw_dst,vlan_id,packet_count,is_flow_counting_switch,is_flow_tagging_switch)
         packet_count=-1
         vlan_id = -1
         nw_src=-1
         nw_dst=-1
       
-    #print "\n end of handle_flow_stats for s%s \n" %(switch_id)
  
   
   def _handle_GoingUpEvent (self, event):
@@ -855,6 +887,8 @@ class l3_arp_pcount_switch (EventMixin):
     
     core.openflow.addListenerByName("FlowStatsReceived", self.handle_flow_stats)
     log.debug("Listening to flow stats ...")
+    
+    log.debug("configuration files -- measurement points file = %s, mtree file=%s" %(measure_pnts_file_str,mtree_file_str))
 
 
 

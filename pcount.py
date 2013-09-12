@@ -35,7 +35,7 @@ import pox.openflow.libopenflow_01 as of
 
 from pox.lib.revent import *
 
-import time
+import time, random
 
 global_vlan_id=0
 
@@ -113,6 +113,9 @@ class PCountSession (EventMixin):
     # (2): tag and count all packets at upstream switch, u
     self._start_pcount_upstream(u_switch_id,vlan_id, nw_src, nw_dst)  
     
+    # (3): start a thread to install a rule which drops packets at u for a short period (this is used to measure time to detect packet loss)
+    Timer(1, self._install_drop_pkt_flow, args = [u_switch_id,nw_src,nw_dst])
+    
   def _find_orig_flow_and_clean_cache(self,switch_id,nw_src,nw_dst,old_flow_priority):
     
     for flow_entry in self.flowTables[switch_id]:
@@ -134,6 +137,31 @@ class PCountSession (EventMixin):
   
     log.error("should have found a matching flow for s%s that tags packets with vlan_id=%s") %(u_switch_id,vlan_id)  
     
+    
+  def _install_drop_pkt_flow(self,u_switch_id,nw_src,nw_dst):
+    
+    # highest possible value for flow table entry is 2^(16) -1
+    flow_priority= 2**16 - 1
+    
+    timeout = random.randint(0,l3_arp_pcount.PCOUNT_WINDOW_SIZE/2) # amount of time packets will be dropped
+    #timeout = l3_arp_pcount.PCOUNT_WINDOW_SIZE/2   # 5 seconds of dropping packets
+                                                          
+    send_flow_rem_flag = of.ofp_flow_mod_flags_rev_map['OFPFF_SEND_FLOW_REM']
+    
+    msg = of.ofp_flow_mod(command=of.OFPFC_ADD,priority=flow_priority,hard_timeout = timeout)
+    msg.flags = send_flow_rem_flag
+    msg.match = of.ofp_match(dl_type = ethernet.IP_TYPE, nw_src=nw_src, nw_dst = nw_dst)
+  
+    current_time = time.strftime("%a, %d %b %Y %H:%M:%S", time.localtime())
+    log.debug( "\t * (%s) installed drop packet flow at s%s (src=%s,dst=%s)" %(current_time,u_switch_id,nw_src,nw_dst))
+    
+    #  To drop packet leave actions empty.  From OpenFlow 1.1 specification "There is no explicit action to represent drops. Instead packets whose action sets have 
+    #  no output actions should be dropped"
+    
+    dpg_utils.send_msg_to_switch(msg, u_switch_id)
+    
+    
+
   def _find_counting_flow_match(self,switch_id,nw_src,nw_dst,vlan_id): 
     
     for flow_entry in self.flowTables[switch_id]:

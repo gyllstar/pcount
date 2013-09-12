@@ -184,11 +184,6 @@ class LearningSwitch (EventMixin):
         log.debug(msg)
         log.debug(" --------------------------------------------------- \n")
         
-  def dpg_dummy_print_test(self):
-    print "\n ---------------------------------------------"
-    print "\t bisutti "
-    print "\n ---------------------------------------------"
-
 
 class l2_learning (EventMixin):
   """
