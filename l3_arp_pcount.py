@@ -15,7 +15,7 @@
 # You should have received a copy of the GNU General Public License
 # along with POX.  If not, see <http://www.gnu.org/licenses/>.
 
-"""
+""" This module is our controller for running PCount sessions.
 
 Some of this module code was copied from "pox/forwarding/l3_learning.py", which had the following comments:
 
@@ -179,7 +179,6 @@ class l3_arp_pcount_switch (EventMixin):
     TODO: the location of the file is hard-coded and should be read for the command line, or improved in some way
     
     """
-  
     mtree_file = "ext/topos/mtree/%s" %(mtree_file_str)
     
     # check if we need to load the mtree file
@@ -223,7 +222,6 @@ class l3_arp_pcount_switch (EventMixin):
     
     TODO: the location of the file is hard-coded, as our the IP addresses of the switches
     """
-    
     # file format: downstream-switch1,downstream-switch2, ..., upstream_switch,src-ip,dest-ip
 
     measure_file = "ext/topos/%s" %(measure_pnts_file_str)
@@ -281,7 +279,6 @@ class l3_arp_pcount_switch (EventMixin):
     flow_entry -- a modify state message (i.e., libopenflow_01.ofp_flow_mod object)
     
     """
-    
     if not self.flowTables.has_key(dpid):
       flow_table = list()
       flow_table.append(flow_entry)
@@ -300,7 +297,6 @@ class l3_arp_pcount_switch (EventMixin):
     nw_dst -- IP address of destination node, used to recognize the flow
     
     """
-    
     pcounter = pcount.PCountSession()
     
     strip_vlan_switch_ids = self.flow_strip_vlan_switch_ids[(nw_src,nw_dst)]
@@ -317,7 +313,6 @@ class l3_arp_pcount_switch (EventMixin):
     nw_dst -- IP address of destination node, used to recognize the flow
     
     """
-    
     if not self.flow_measure_points.has_key(d_switch_id):
       return False,-1,-1
     
@@ -345,7 +340,6 @@ class l3_arp_pcount_switch (EventMixin):
      TODO: refactor this mess by changing the structure of flow_measure_points to (nw_src,nw_dst) -> (d_switch_id2, d_switch_id3, .... , u_switch_id) b/c no longer will need to search
           the entire dict for a match 
     """
-     
     # could be the key
     if self.flow_measure_points.has_key(switch_id):
       for measure_pnt in self.flow_measure_points[switch_id]:
@@ -381,7 +375,6 @@ class l3_arp_pcount_switch (EventMixin):
   
   def _total_tag_and_cnt_switches(self, nw_src, nw_dst):
     """ returns the total number of measurement nodes (taggers and counters) for flow (nw_src,nw_dst)"""
-    
     for measure_pnts in self.flow_measure_points.values():
       for measure_pnt in measure_pnts:
         last_indx = len(measure_pnt) -1
@@ -468,7 +461,6 @@ class l3_arp_pcount_switch (EventMixin):
   
   def _install_rewrite_dst_mcast_flow(self,switch_id,nw_src,ports,nw_mcast_dst,new_dst):
     """ Creates a flow table rule that rewrites the multicast address in the packet to the IP address of a downstream host.  """
-  
     msg = of.ofp_flow_mod(command=of.OFPFC_ADD)
     msg.match = of.ofp_match(dl_type = ethernet.IP_TYPE, nw_src=nw_src, nw_dst = nw_mcast_dst)
     
@@ -517,7 +509,6 @@ class l3_arp_pcount_switch (EventMixin):
   
   def _send_arp_reply(self,eth_packet,arp_packet,switch_id,inport,mcast_mac_addr,outport):
     """ Create an ARP reply packet and send to the requesting switch"""
-    
     r = arp()
     r.hwtype = arp_packet.hwtype
     r.prototype = arp_packet.prototype
@@ -578,7 +569,6 @@ class l3_arp_pcount_switch (EventMixin):
   # should have some way to determine which hosts are downstream from a given switch, rather than hard coding this  
   def _setup_mtree1(self,nw_src,nw_mcast_dst,inport,mtree_switches):
     """ More hard-coding of the multicast trees.  Here we install the flow entries at each switch node """
-    
     # mcast address = 10.10.10.10, src = 10.0.0.3, dst1=10.0.0.1, dst2 = 10.0.0.2
     # tree: 
     #       h1 -- s4
@@ -709,7 +699,6 @@ class l3_arp_pcount_switch (EventMixin):
     inport -- 
     
     """
-    
     a = packet.next  # 'a' seems to be an IP packet (or actually it's an ARP packet)
     
     log.debug("%i %i ARP %s %s => %s", dpid, inport,{arp.REQUEST:"request",arp.REPLY:"reply"}.get(a.opcode,
@@ -792,7 +781,6 @@ class l3_arp_pcount_switch (EventMixin):
     Updates and logs the count of the true number of packets dropped, and prints this value to the console 
     
     """
-
     num_dropped_pkts = event.ofp.packet_count
     
     global actual_total_pkt_dropped,actual_pkt_dropped_gt_threshold_time,pkt_dropped_curr_sampling_window
@@ -851,7 +839,6 @@ class l3_arp_pcount_switch (EventMixin):
 
   def _record_pcount_value(self,vlan_id,nw_src,nw_dst,switch_id,packet_count,is_upstream,total_tag_count_switches):
     """ Log the Pcount session results and print to console """
-    
     result_list = list()    # vlan_id -> [nw_src,nw_dst, u_switch_id,u_count,d_switch_id,d_count,u_count-dcount]
     if self.pcount_results.has_key(vlan_id):
       result_list = self.pcount_results[vlan_id]
@@ -924,7 +911,6 @@ class l3_arp_pcount_switch (EventMixin):
 
   def handle_flow_stats (self,event):
     """ Process a flow statistics query result from a given switch"""
- 
     switch_id = event.connection.dpid
     
     entry_num=0

@@ -15,10 +15,7 @@
 # You should have received a copy of the GNU General Public License
 # along with POX.  If not, see <http://www.gnu.org/licenses/>.
 
-"""
-DPG: PCount algorithm
 
-"""
 
 from pox.core import core
 from pox.lib.recoco import Timer
@@ -43,7 +40,9 @@ global_vlan_id=0
 
 
 class PCountSession (EventMixin):
+  """ Single PCount session: measure the packet loss for flow, f, between an upstream switch and downstream switches, for a specified window of time
   
+  """
   
   def __init__ (self):
 
@@ -58,15 +57,20 @@ class PCountSession (EventMixin):
     
   def pcount_session(self,u_switch_id,d_switch_ids,strip_vlan_switch_ids,mtree_dstream_hosts,nw_src, nw_dst,flow_tables,arpTable,window_size):
     """
-    measure the packet loss for flow, f, between the upstream swtich and downstream for a specified window of time
+    Entry point to running a PCount session. Measure the packet loss for flow, f, between the upstream switch and  and downstream switches, for a specified window of time
     
-    u_switch_id is the id of the upstream switch, 
-    d_switch_ids is a list of ids of the downstream switches,
-    flow is the flow in which packet loss is measured,
-    window is the length (in time) of the sampling window
+    Keyword argumetns
+    u_switch_id --  the id of the upstream switch, 
+    d_switch_ids -- list of ids of the downstream switches
+    strip_vlan_switch_ids -- the ids of nodes that should remove the VLAN tag from matched packets
+    mtree_dstream_hosts -- the downstream hosts in teh multicast tree
+    nw_src -- IP address of the source host (used to identify the flow to run the pcount session over)
+    nw_dst -- IP address of the destination host, possibly a multicast address) (used to identify the flow to run the pcount sesssion over)
+    flow_tables -- list of all flow tables, copied from l3_arp_pcount
+    arpTable -- copy of the ARP table
+    window_size -- window is the length (in seconds) of the sampling window
+    
     """
-    
-    
     global global_vlan_id
     global_vlan_id+=1
     self.flowTables = flow_tables
@@ -82,10 +86,8 @@ class PCountSession (EventMixin):
 
 
 
-  # note: this function ends up querying the switch for all flow entries that match the (nw_src, nw_dst).  there is nothing unique in the VLAN tagging match structure
-  #       to allow us to just query for the tagging flow.  (cannot use priority becasue this is not in the match structure)  
   def _query_tagging_switch(self,switch_id,vlan_id,nw_src,nw_dst):
-    
+    """ Issue a query to the tagging switch, using (vlan_id,nw_src,nw_dst) to identify the flow """
     for con in core.openflow._connections.itervalues():
         if con.dpid == switch_id:
           match,priority= self._find_tagging_flow_match(switch_id, nw_src, nw_dst, vlan_id)
@@ -94,7 +96,7 @@ class PCountSession (EventMixin):
           #con.send(of.ofp_stats_request(body=of.ofp_flow_stats_request()))  #DPG: temp for debugging so we can see all flow table values
     
   def _query_counting_switch(self,switch_id,vlan_id,nw_src,nw_dst):
-
+    """ Send a query request to the counting switch """
     for con in core.openflow._connections.itervalues():
         if con.dpid == switch_id:
           match = self._find_counting_flow_match(switch_id, nw_src, nw_dst, vlan_id)
@@ -103,7 +105,11 @@ class PCountSession (EventMixin):
           #con.send(of.ofp_stats_request(body=of.ofp_flow_stats_request()))  #DPG: temp for debugging so we can see all flow table values
 
   def _start_pcount_session(self,u_switch_id,d_switch_ids,strip_vlan_switch_ids,mtree_dstream_hosts,nw_src,nw_dst,vlan_id):
+    """ Install flow entries for PCount session and install rule to drop packets (to simulate packet loss)
     
+    Install a flow entry downstream to count tagged packets, then install tag and count rule upstream, and last install a rule to randomly drop packets so as to simulate packet loss
+    
+    """
     self.current_highest_priority_flow_num+=1
     
     # (1): count and tag all packets at d that match the VLAN tag
@@ -117,7 +123,7 @@ class PCountSession (EventMixin):
     Timer(1, self._install_drop_pkt_flow, args = [u_switch_id,nw_src,nw_dst])
     
   def _find_orig_flow_and_clean_cache(self,switch_id,nw_src,nw_dst,old_flow_priority):
-    
+    """ Find a flow matching (nw_src,nw_dst,old_flow_priority), remove it from the cache, and return this value """
     for flow_entry in self.flowTables[switch_id]:
       if flow_entry.match.nw_src == nw_src and flow_entry.match.nw_dst == nw_dst and flow_entry.priority == old_flow_priority:
           match = flow_entry.match
@@ -128,7 +134,7 @@ class PCountSession (EventMixin):
     
 
   def _find_tagging_flow_match(self,u_switch_id,nw_src,nw_dst,vlan_id):
-    
+    """ Find a tagging flow matching (nw_src,nw_dst,vlan_id), remove it from the cache, and return this value """    
     for flow_entry in self.flowTables[u_switch_id]:
       if flow_entry.match.nw_src == nw_src and flow_entry.match.nw_dst == nw_dst:
         for flow_action in flow_entry.actions:
@@ -139,7 +145,7 @@ class PCountSession (EventMixin):
     
     
   def _install_drop_pkt_flow(self,u_switch_id,nw_src,nw_dst):
-    
+    """ Install a rule to drop packets at the given switch.  Between a random integer between 0 and w/2, where w is window size of the PCount session, are dropped."""
     # highest possible value for flow table entry is 2^(16) -1
     flow_priority= 2**16 - 1
     
@@ -163,7 +169,7 @@ class PCountSession (EventMixin):
     
 
   def _find_counting_flow_match(self,switch_id,nw_src,nw_dst,vlan_id): 
-    
+    """ Find a counting flow entry (by looking at our cache) matching (nw_src,nw_dst,vlan_id) and return it. """
     for flow_entry in self.flowTables[switch_id]:
       if flow_entry.match.nw_src == nw_src and flow_entry.match.nw_dst == nw_dst and flow_entry.match.dl_vlan==vlan_id:
         return flow_entry.match
@@ -171,7 +177,7 @@ class PCountSession (EventMixin):
     log.error("should have found a matching flow for s%s that counts packets with vlan_id=%s") %(d_switch_id,vlan_id)  
 
   def _find_tagging_flow_and_clean_cache(self,u_switch_id,nw_src,nw_dst,vlan_id):
-    
+    """ Find a tagging flow entry (by looking at our cache) matching (nw_src,nw_dst,vlan_id), remove it from the cache, and return it. """
     for flow_entry in self.flowTables[u_switch_id]:
       if flow_entry.match.nw_src == nw_src and flow_entry.match.nw_dst == nw_dst:
         for flow_action in flow_entry.actions:
@@ -183,7 +189,7 @@ class PCountSession (EventMixin):
     
     
   def _find_vlan_counting_flow_and_clean_cache(self,switch_id,nw_src,nw_dst,vlan_id):
-    
+    """ Find a counting flow entry (by looking at our cache) matching (nw_src,nw_dst,vlan_id), remove it from the cache, and return it. """
     for flow_entry in self.flowTables[switch_id]:
       if flow_entry.match.nw_src == nw_src and flow_entry.match.nw_dst == nw_dst and flow_entry.match.dl_vlan==vlan_id:
         self.flowTables[switch_id].remove(flow_entry)
@@ -193,14 +199,17 @@ class PCountSession (EventMixin):
 
 
   def _stop_pcount_session_and_query(self,u_switch_id,d_switch_ids,nw_src,nw_dst,vlan_id):
-    """
-    measure the packet loss for flow, f, between the upstream swtich and downstream for a specified window of time
+    """ Stop the PCount session by removing the tagging and counting flows and issuing a query for their corresponding packet counts.
     
-    u_switch_id is the upstream switch id, 
-    d_switch_ids list of the downstream switch ids,
-    flow is the flow in which packet loss is measured
+    The operations to stop PCount takes place in the following order
+      (1)  turn tagging off at the upstream switch by installing a copy of the original flow entry, that matches (nw_src,nw_dst), with higher priority than e' (the tagging flow)
+      (2)  wait for time proportional to transit time between u and d to turn counting off at d (to account for in-transit packets after tagging is shut off)
+      (3)  query upstream and downstream switches for packet counts
+      (4)  delete the upstream tagging flow
+      (5)  delete the original upstream flow used upstream to match packets for our flow (nw_src,nw_dst)
+      (6)  delete the downstream VLAN counting flow
+
     """
-    
     current_time = time.strftime("%a, %d %b %Y %H:%M:%S", time.localtime())
     log.debug("(%s) stopped pcount session between switches (s%s,%s) for flow (src=%s,dst=%s,vlan_id=%s)" %(current_time,u_switch_id,d_switch_ids,nw_src,nw_dst,vlan_id))
     
@@ -240,8 +249,7 @@ class PCountSession (EventMixin):
       
   
   def _reinstall_basic_flow_entry(self,switch_id,nw_src,nw_dst,flow_priority):
-    
-       
+    """ Install a flow entry that only cares about (nw_src,nw_dst), i.e., nothing with vlan_id """
     # Hack: just use the network source and destination to create a new flow, rather than make a copy
     msg = of.ofp_flow_mod(command=of.OFPFC_ADD,
                                 priority=flow_priority)
@@ -262,7 +270,7 @@ class PCountSession (EventMixin):
   
 
   def _add_rewrite_single_mcast_dst_action(self,switch_id,msg,nw_mcast_dst,new_ip_dst):
-    
+    """ Append to the action list of flow, to rewrite a multicast address to a regular IP address"""
     action = of.ofp_action_nw_addr.set_dst(IPAddr(new_ip_dst))
     msg.actions.append(action)
   
@@ -273,9 +281,7 @@ class PCountSession (EventMixin):
 
 
   def _start_pcount_downstream(self,d_switch_id,strip_vlan_switch_ids,mtree_dstream_hosts,vlan_id,nw_src,nw_dst):
-    """
-      start tagging and counting packets at the downstream switch
-    """
+    """ Install a flow entry at each downstream measurement node to count tagged packets. """
     # (1): create a copy of the flow entry, e, at switch d.  call this copy e''.  e''  counts packets using the VLAN field
     
     flow_priority = self.current_highest_priority_flow_num
@@ -320,10 +326,8 @@ class PCountSession (EventMixin):
     self._cache_flow_table_entry(d_switch_id, msg)
 
   def _start_pcount_upstream(self,u_switch_id,vlan_id,nw_src,nw_dst):
+    """ Start tagging and counting packets at the upstream switch.  Creates a new flow table entry to do so and is set with a higher priority than its non-tagging counterpart
     """
-      start tagging and counting packets at the upstream switch
-    """
-    
   # (1): create a copy of the flow entry, e, at switch u.  call this copy e'. 
 
     # highest possible value for flow table entry is 2^(16) -1
@@ -358,7 +362,7 @@ class PCountSession (EventMixin):
   
     
   def _cache_flow_table_entry(self,dpid,flow_entry):
-    
+    """ Add the flow table entry to our copy at the controller. """
    # print "DPG: called l3_arp_pcount.__cache_flow_table_entry:(%s,%s)" %(dpid,flow_entry) 
     
     if not self.flowTables.has_key(dpid):
