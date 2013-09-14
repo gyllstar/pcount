@@ -26,7 +26,7 @@ from pox.lib.addresses import IPAddr,EthAddr
 from pox.lib.packet.ethernet import ethernet
 from pox.lib.packet.ipv4 import ipv4
 from pox.lib.packet.arp import arp
-import dpg_utils, l3_arp_pcount
+import utils, l3_arp_pcount
 
 import pox.openflow.libopenflow_01 as of
 
@@ -164,7 +164,7 @@ class PCountSession (EventMixin):
     #  To drop packet leave actions empty.  From OpenFlow 1.1 specification "There is no explicit action to represent drops. Instead packets whose action sets have 
     #  no output actions should be dropped"
     
-    dpg_utils.send_msg_to_switch(msg, u_switch_id)
+    utils.send_msg_to_switch(msg, u_switch_id)
     
     
 
@@ -232,20 +232,20 @@ class PCountSession (EventMixin):
     # delete the upstream VLAN tagging flow
     u_switch_msg = of.ofp_flow_mod(command=of.OFPFC_DELETE_STRICT)
     u_switch_msg.match,u_switch_msg.priority = self._find_tagging_flow_and_clean_cache(u_switch_id,nw_src,nw_dst,vlan_id)
-    dpg_utils.send_msg_to_switch(u_switch_msg , u_switch_id)
+    utils.send_msg_to_switch(u_switch_msg , u_switch_id)
  
     #delete the original upstream flow
     old_flow_priority = self.current_highest_priority_flow_num - 2
     u_switch_msg2 = of.ofp_flow_mod(command=of.OFPFC_DELETE_STRICT)
     u_switch_msg2.match = self._find_orig_flow_and_clean_cache(u_switch_id,nw_src,nw_dst,old_flow_priority)
     u_switch_msg2.priority = old_flow_priority
-    dpg_utils.send_msg_to_switch(u_switch_msg2 , u_switch_id)
+    utils.send_msg_to_switch(u_switch_msg2 , u_switch_id)
  
     for d_switch_id in d_switch_ids:    
       # delete the downstream VLAN counting flow
       d_switch_msg = of.ofp_flow_mod(command=of.OFPFC_DELETE_STRICT)
       d_switch_msg.match,d_switch_msg.priority = self._find_vlan_counting_flow_and_clean_cache(d_switch_id,nw_src,nw_dst,vlan_id)
-      dpg_utils.send_msg_to_switch(d_switch_msg , d_switch_id)
+      utils.send_msg_to_switch(d_switch_msg , d_switch_id)
       
   
   def _reinstall_basic_flow_entry(self,switch_id,nw_src,nw_dst,flow_priority):
@@ -256,12 +256,12 @@ class PCountSession (EventMixin):
         
     msg.match = of.ofp_match(dl_type = ethernet.IP_TYPE, nw_src=nw_src, nw_dst = nw_dst)
     
-    prts = dpg_utils.find_nonvlan_flow_outport(self.flowTables, switch_id, nw_src, nw_dst)
+    prts = utils.find_nonvlan_flow_outport(self.flowTables, switch_id, nw_src, nw_dst)
     
     for p in prts:
       msg.actions.append(of.ofp_action_output(port = p))
     
-    dpg_utils.send_msg_to_switch(msg, switch_id)
+    utils.send_msg_to_switch(msg, switch_id)
     
     self._cache_flow_table_entry(switch_id, msg)
   
@@ -304,7 +304,7 @@ class PCountSession (EventMixin):
         if d_switch_id in strip_vlan_switch_ids:
           msg.actions.append(of.ofp_action_header(type=of.OFPAT_STRIP_VLAN))  
         
-        prts = dpg_utils.find_nonvlan_flow_outport(self.flowTables, d_switch_id, nw_src, new_ip_dst)
+        prts = utils.find_nonvlan_flow_outport(self.flowTables, d_switch_id, nw_src, new_ip_dst)
         
         for p in prts:
           msg.actions.append(of.ofp_action_output(port = p))
@@ -313,7 +313,7 @@ class PCountSession (EventMixin):
       if d_switch_id in strip_vlan_switch_ids:
         msg.actions.append(of.ofp_action_header(type=of.OFPAT_STRIP_VLAN))  
         
-      prts = dpg_utils.find_nonvlan_flow_outport(self.flowTables, d_switch_id, nw_src, nw_dst)
+      prts = utils.find_nonvlan_flow_outport(self.flowTables, d_switch_id, nw_src, nw_dst)
       
       for p in prts:
         msg.actions.append(of.ofp_action_output(port = p))
@@ -321,7 +321,7 @@ class PCountSession (EventMixin):
     # (2): install e'' at d with a higher priority than e
     current_time = time.strftime("%a, %d %b %Y %H:%M:%S", time.localtime())
     log.debug("\t * (%s) installed counting flow (src=%s,dest=%s,priority=%s,vlan_id=%s) at s%s" % (current_time,nw_src,nw_dst,flow_priority,vlan_id,d_switch_id))
-    dpg_utils.send_msg_to_switch(msg, d_switch_id)
+    utils.send_msg_to_switch(msg, d_switch_id)
     
     self._cache_flow_table_entry(d_switch_id, msg)
 
@@ -335,7 +335,7 @@ class PCountSession (EventMixin):
     flow_priority = self.current_highest_priority_flow_num
     
     #prt = self._find_nonvlan_flow_outport(u_switch_id, nw_src, nw_dst)
-    prts = dpg_utils.find_nonvlan_flow_outport(self.flowTables, u_switch_id, nw_src, nw_dst)
+    prts = utils.find_nonvlan_flow_outport(self.flowTables, u_switch_id, nw_src, nw_dst)
       
     # Hack: just use the network source and destination to create a new flow, rather than make a copy
     msg = of.ofp_flow_mod(command=of.OFPFC_ADD,
@@ -356,7 +356,7 @@ class PCountSession (EventMixin):
     
     
   # (3): install e' at u with a higher priority than e
-    dpg_utils.send_msg_to_switch(msg, u_switch_id)
+    utils.send_msg_to_switch(msg, u_switch_id)
     
     self._cache_flow_table_entry(u_switch_id, msg)
   

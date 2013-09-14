@@ -39,7 +39,7 @@ log = core.getLogger()
 from pox.lib.recoco import Timer
 import csv
 import os,sys
-import dpg_utils
+import utils
 from pox.lib.util import dpidToStr
 
 from pox.lib.packet.ethernet import ethernet
@@ -138,7 +138,10 @@ class l3_arp_pcount_switch (EventMixin):
   This is the controller application.  Implements an L3 learning switch, ARP, and PCount.  
   
   The flow tables are populated by implementing the behavior of an L3 learning switch.  Supporting ARP is a necessary to do so.  
-  The PCount sessions are triggered, using a timer, after the first flow entries are installed (as part of the L3 learning phase)  
+  The PCount sessions are triggered, using a timer, after the first flow entries are installed (as part of the L3 learning phase).
+  Currently flows are specified using the source IP address and destination address tuple.  
+  
+  TODO: Flows should be refactored to match packets using only the destination address, rather than (src_ip,dst_up) pair.  
   
   """
   
@@ -159,7 +162,6 @@ class l3_arp_pcount_switch (EventMixin):
     
     # (src-ip,dst-ip) -> [switch_id1, switch_id2, ...]
     self.flow_strip_vlan_switch_ids = {}
-    
     
     # (src-ip,dst-ip,switch_id) -> [dstream_host1,dstream_host2, ...] 
     self.mtree_dstream_hosts = {}
@@ -490,7 +492,7 @@ class l3_arp_pcount_switch (EventMixin):
       for prt in ports:
         msg.actions.append(of.ofp_action_output(port = prt))
       
-    dpg_utils.send_msg_to_switch(msg, switch_id)
+    utils.send_msg_to_switch(msg, switch_id)
     self._cache_flow_table_entry(switch_id, msg)
     
     
@@ -503,7 +505,7 @@ class l3_arp_pcount_switch (EventMixin):
     for prt in ports:
       msg.actions.append(of.ofp_action_output(port = prt))
     
-    dpg_utils.send_msg_to_switch(msg, switch_id)
+    utils.send_msg_to_switch(msg, switch_id)
     self._cache_flow_table_entry(switch_id, msg)
     
   
@@ -529,7 +531,7 @@ class l3_arp_pcount_switch (EventMixin):
     msg.actions.append(of.ofp_action_output(port = of.OFPP_IN_PORT))
     msg.in_port = inport
     
-    dpg_utils.send_msg_to_switch(msg, switch_id)
+    utils.send_msg_to_switch(msg, switch_id)
     
     
   
@@ -578,7 +580,7 @@ class l3_arp_pcount_switch (EventMixin):
     
     # s7: install (src=10.0.0.3, dst = 10.10.10.10, outport)
     switch_id = mtree_switches[0]
-    s7_ports = dpg_utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h1)
+    s7_ports = utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h1)
     self._install_basic_mcast_flow(switch_id, nw_src,s7_ports,nw_mcast_dst)
     self.arpTable[switch_id][nw_mcast_dst] = Entry(s7_ports,mcast_mac_addr)
     
@@ -586,8 +588,8 @@ class l3_arp_pcount_switch (EventMixin):
     # s6: install (src=10.0.0.3, dst = 10.10.10.10, outport_list) or
     # s6: install (src=10.0.0.3, dst = 10.0.0.1, outport),  (src=10.0.0.3, dst = 10.0.0.6, outport) 
     switch_id = mtree_switches[1]
-    h1_prts = dpg_utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h1)
-    h2_prts = dpg_utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h2)
+    h1_prts = utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h1)
+    h2_prts = utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h2)
     s6_ports = h1_prts + h2_prts
     self._install_basic_mcast_flow(switch_id, nw_src, s6_ports, nw_mcast_dst)
     self.arpTable[switch_id][nw_mcast_dst] = Entry(s6_ports,mcast_mac_addr)
@@ -596,14 +598,14 @@ class l3_arp_pcount_switch (EventMixin):
     
     # s5: rewrite destination address from 10.10.10.10 to h2 (10.0.0.2)
     switch_id = mtree_switches[2]
-    s5_ports = dpg_utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h2)
+    s5_ports = utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h2)
     self._install_rewrite_dst_mcast_flow(switch_id, nw_src, s5_ports, nw_mcast_dst, h2)
     self.arpTable[switch_id][nw_mcast_dst] = Entry(s5_ports,mcast_mac_addr)
     self.mtree_dstream_hosts[(nw_src,nw_mcast_dst,switch_id)] = [h2]
     
     # s4: rewrite destination address from 10.10.10.10 to h1 (10.0.0.1)
     switch_id = mtree_switches[3]
-    s4_ports = dpg_utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h1)
+    s4_ports = utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h1)
     self._install_rewrite_dst_mcast_flow(switch_id, nw_src, s4_ports, nw_mcast_dst, h1)  
     self.arpTable[switch_id][nw_mcast_dst] = Entry(s4_ports,mcast_mac_addr) 
     self.mtree_dstream_hosts[(nw_src,nw_mcast_dst,switch_id)] = [h1]
@@ -630,19 +632,19 @@ class l3_arp_pcount_switch (EventMixin):
     
     # s10: install (src=10.0.0.9, dst = 11.11.11.11, outport_list) 
     switch_id = mtree_switches[0]
-    h8_prts = dpg_utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h8)
-    h6_prts = dpg_utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h6)
+    h8_prts = utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h8)
+    h6_prts = utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h6)
     s10_ports = h8_prts + h6_prts
     self._install_basic_mcast_flow(switch_id, nw_src, s10_ports, nw_mcast_dst)
     self.arpTable[switch_id][nw_mcast_dst] = Entry(s10_ports,mcast_mac_addr)
     
     # s14: rewrite destination address from 11.11.11.11 to h5 and h6 
     switch_id = mtree_switches[1]
-    #s14_ports = dpg_utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h5)
+    #s14_ports = utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h5)
     #self._install_rewrite_dst_mcast_flow(switch_id, nw_src, s14_ports, nw_mcast_dst, h5)
     #self.mtree_dstream_hosts[(nw_src,nw_mcast_dst,switch_id)] = [h5]
-    h5_ports = dpg_utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h5)
-    h6_ports = dpg_utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h6)
+    h5_ports = utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h5)
+    h6_ports = utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h6)
     s14_ports = {h5:h5_ports, h6:h6_ports}
     self._install_rewrite_dst_mcast_flow(switch_id, nw_src, s14_ports, nw_mcast_dst, [h5,h6])
     self.mtree_dstream_hosts[(nw_src,nw_mcast_dst,switch_id)] = [h5,h6]
@@ -651,9 +653,9 @@ class l3_arp_pcount_switch (EventMixin):
     
     # s15: rewrite destination address from 11.11.11.11 to h2,h7, and h8 
     switch_id = mtree_switches[2]
-    h7_ports = dpg_utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h7)
-    h8_ports = dpg_utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h8)
-    h9_ports = dpg_utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h9)
+    h7_ports = utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h7)
+    h8_ports = utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h8)
+    h9_ports = utils.find_nonvlan_flow_outport(self.flowTables,switch_id, nw_src, h9)
     #s15_ports = h7_ports + h8_ports + h9_ports
     s15_ports = {}
     s15_ports[h7] = h7_ports
@@ -716,7 +718,7 @@ class l3_arp_pcount_switch (EventMixin):
               self._send_arp_reply(packet, a, dpid, inport, self.arpTable[dpid][a.protodst].mac, self.arpTable[dpid][a.protodst].port)
             else:
               #getting the outport requires that we have run a "pingall" to setup the flow tables for the non-multicast addreses
-              outport = dpg_utils.find_nonvlan_flow_outport(self.flowTables,dpid, a.protosrc, h1)
+              outport = utils.find_nonvlan_flow_outport(self.flowTables,dpid, a.protosrc, h1)
               self.arpTable[dpid][a.protodst] = Entry(outport,mcast_mac_addr)
               self._send_arp_reply(packet, a, dpid, inport, self.arpTable[dpid][a.protodst].mac, self.arpTable[dpid][a.protodst].port)
             
