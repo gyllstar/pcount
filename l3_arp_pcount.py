@@ -133,8 +133,9 @@ class Entry (object):
 
 
 
-class recovery_controller (EventMixin):
-  """ This is the controller application.  Each network switch is implemented as an L3 learning switch, ARP, and PCount. 
+class l3_arp_pcount_switch (EventMixin):
+  """
+  This is the controller application.  Implements an L3 learning switch, ARP, and PCount.  
   
   The flow tables are populated by implementing the behavior of an L3 learning switch.  Supporting ARP is a necessary to do so.  
   The PCount sessions are triggered, using a timer, after the first flow entries are installed (as part of the L3 learning phase).
@@ -171,9 +172,6 @@ class recovery_controller (EventMixin):
     self._read_flow_measure_points_file()
     
     self._read_mtree_file()
-    
-    # multicast_dst_address -> list of tuples (u,d), representing a directed edge from u to d, that constitute all edges in the primary tree
-    self.primary_trees = {}
     
     
   def _read_mtree_file(self):
@@ -290,15 +288,6 @@ class recovery_controller (EventMixin):
     else:
       self.flowTables[dpid].append(flow_entry)
 
-
-  def check_install_backup_trees(self,pkt_loss_cnt):
-    """ Checks if the pkt_loss_cnt exceeds a threshold""" 
-    
-    return pkt_loss_cnt > packets_dropped_threshold
-         
-  def install_backup_trees(self):
-    
-    print "placeholder for installing backup trees"
    
   def _start_pcount_thread(self,u_switch_id, d_switch_ids, nw_src, nw_dst):
     """ Sets a timer to start a PCount session
@@ -508,7 +497,7 @@ class recovery_controller (EventMixin):
     
     
   def _install_basic_mcast_flow(self,switch_id,nw_src,ports,nw_mcast_dst):
-    """ Install a flow table rule using the multicast destination address and list of outports  """
+    """ Install a flow table rule using the multicast destination address  """
   
     msg = of.ofp_flow_mod(command=of.OFPFC_ADD)
     msg.match = of.ofp_match(dl_type = ethernet.IP_TYPE, nw_src=nw_src, nw_dst = nw_mcast_dst)
@@ -564,30 +553,23 @@ class recovery_controller (EventMixin):
     """ Hard-coded setup of mutlicast trees using the switch_id numbers. """
     if nw_mcast_dst == mcast_ip_addr1:
       mtree1_switches = []
-      primary_tree = []
       if len(self.mcast_groups.keys()) == 2:
         mtree1_switches = [10,11,13,12]
-        primary_tree = [(13,12),(12,11),(12,10)]
       else:
         mtree1_switches = [7,6,5,4]
-        primary_tree = [(7,6),(6,4),(6,5)]
-      
-      self.primary_trees[nw_mcast_dst] = primary_tree
-      return self._setup_mtree1_flow_tables(nw_src, nw_mcast_dst, inport,mtree1_switches)
+        
+      return self._setup_mtree1(nw_src, nw_mcast_dst, inport,mtree1_switches)
     elif nw_mcast_dst == mcast_ip_addr2:
       mtree2_switches = []
-      primary_tree = []
       if len(self.mcast_groups.keys()) == 2:
         mtree2_switches = [10,14,15]
-        primary_tree = [(15,14),(15,10)]
-      
-      self.primary_trees[nw_mcast_dst] = primary_tree
-      return self._setup_mtree2_flow_tables(nw_src, nw_mcast_dst, inport,mtree2_switches)
+        
+      return self._setup_mtree2(nw_src, nw_mcast_dst, inport,mtree2_switches)
     
   
   # should really use self.mcast_groups to determine which hosts are a part of the multicast group and tree
   # should have some way to determine which hosts are downstream from a given switch, rather than hard coding this  
-  def _setup_mtree1_flow_tables(self,nw_src,nw_mcast_dst,inport,mtree_switches):
+  def _setup_mtree1(self,nw_src,nw_mcast_dst,inport,mtree_switches):
     """ More hard-coding of the multicast trees.  Here we install the flow entries at each switch node """
     # mcast address = 10.10.10.10, src = 10.0.0.3, dst1=10.0.0.1, dst2 = 10.0.0.2
     # tree: 
@@ -635,7 +617,7 @@ class recovery_controller (EventMixin):
     
     return u_switch_id, d_switch_ids
   
-  def _setup_mtree2_flow_tables(self,nw_src,nw_mcast_dst,inport,mtree_switches):
+  def _setup_mtree2(self,nw_src,nw_mcast_dst,inport,mtree_switches):
     """ More hard-coding of the multicast trees.  Here we install the flow entries at each switch node """
         
     # mcast address = 11.11.11.11, src = 10.0.0.4, dst1=10.0.0.2, dst2 = 10.0.0.7, dst3 = 10.0.0.8, dst4 = 10.0.0.5, dst5 = 10.0.0.6
@@ -904,9 +886,6 @@ class recovery_controller (EventMixin):
           diff = result_list[3] - result_list[offset]
           result_list.append(diff)
           
-          if self.check_install_backup_trees(diff):
-            self.install_backup_trees(diff)
-          
           if not updatedTotalDrops:
             global detect_total_pkt_dropped
             detect_total_pkt_dropped += diff
@@ -994,7 +973,7 @@ class recovery_controller (EventMixin):
 
 def launch ():
   
-  core.registerNew(recovery_controller)
+  core.registerNew(l3_arp_pcount_switch)
   
   
 

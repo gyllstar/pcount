@@ -1,3 +1,13 @@
+# @author: dpg/gyllstar/Dan Gyllstrom
+
+
+""" Implements PCount algorithm.
+
+This module contains helper functions called by the controller to initiate PCount sessions,
+along with a PCountSession class that does the actual PCount implmentation.
+"""
+
+
 from pox.core import core
 from pox.lib.recoco import Timer
 import pox
@@ -7,7 +17,7 @@ from pox.lib.addresses import IPAddr,EthAddr
 from pox.lib.packet.ethernet import ethernet
 from pox.lib.packet.ipv4 import ipv4
 from pox.lib.packet.arp import arp
-import utils, l3_arp_pcount
+import utils, appleseed
 
 import pox.openflow.libopenflow_01 as of
 
@@ -19,6 +29,154 @@ global_vlan_id=0
 
 
 
+def start_pcount_thread(u_switch_id, d_switch_ids, nw_src, nw_dst,controller):
+  """ Sets a timer to start a PCount session
+  
+  Keyword Arguments:
+  u_switch_id -- upstream switch id
+  d_switch_id -- downstream switch id
+  nw_src -- IP address of the source node, used to recognize the flow
+  nw_dst -- IP address of destination node, used to recognize the flow
+  
+  """
+  pcounter = PCountSession()
+  
+  strip_vlan_switch_ids = flow_strip_vlan_switch_ids[(nw_src,nw_dst)]
+  
+  Timer(PCOUNT_CALL_FREQUENCY,pcounter.pcount_session, args = [u_switch_id, d_switch_ids,strip_vlan_switch_ids,controller.mtree_dstream_hosts,nw_src, nw_dst, controller.flowTables,controller.arpTable, PCOUNT_WINDOW_SIZE],recurring=True)
+
+  
+def check_start_pcount(d_switch_id,nw_src,nw_dst,controller):
+  """ Checks if the given switch for flow (nw_src,nw_dst) is the downstream switch in which we want to trigger a PCount session
+  
+  Keyword Arguments:
+  d_switch_id -- downstream switch id
+  nw_src -- IP address of the source node, used to recognize the flow
+  nw_dst -- IP address of destination node, used to recognize the flow
+  
+  """
+  if not controller.flow_measure_points.has_key(d_switch_id):
+    return False,-1,-1
+  
+  
+  for measure_pnt in controller.flow_measure_points[d_switch_id]:
+    last_indx = len(measure_pnt) -1
+    
+    if measure_pnt[last_indx-1] == nw_src and measure_pnt[last_indx] == nw_dst:
+      dstream_switches = list()
+      dstream_switches.append(d_switch_id)
+      dstream_switches = dstream_switches + measure_pnt[0:last_indx-2]
+      
+      return True,measure_pnt[last_indx-2],dstream_switches  #returns the upstream switch id 
+    
+  return False,-1,-1
+
+
+
+
+# TODO: refactor this mess by changing the structure of flow_measure_points to (nw_src,nw_dst) -> (d_switch_id2, d_switch_id3, .... , u_switch_id) b/c no longer will need to search
+#       the entire dict for a match
+def is_flow_counting_switch(switch_id,nw_src,nw_dst,controller):
+  """ Checks if this switch is a downstream counting node for the (nw_src,nw_dst) flow
+   
+   TODO: refactor this mess by changing the structure of flow_measure_points to (nw_src,nw_dst) -> (d_switch_id2, d_switch_id3, .... , u_switch_id) b/c no longer will need to search
+        the entire dict for a match 
+  """
+  # could be the key
+  if controller.flow_measure_points.has_key(switch_id):
+    for measure_pnt in controller.flow_measure_points[switch_id]:
+      last_indx = len(measure_pnt) -1
+      if measure_pnt[last_indx-1] == nw_src and measure_pnt[last_indx] == nw_dst:
+        return True
+   
+  # could also be one of the first few values in the value list
+  for measure_pnts in controller.flow_measure_points.values():
+    for measure_pnt in measure_pnts:
+      last_indx = len(measure_pnt) -1
+      if measure_pnt[last_indx-1] == nw_src and measure_pnt[last_indx] == nw_dst:
+        if switch_id in measure_pnt[0:last_indx-2]:  # the list "subset" or slice is not inclusive on the upper index
+          return True
+  
+  return False
+   
+
+
+# tagging takes place at the upstream node
+def is_flow_tagging_switch(switch_id,nw_src,nw_dst,controller):
+  """ is this an upstream tagging switch for flow (nw_src,nw_dst) """
+  
+  for measure_pnts in controller.flow_measure_points.values():
+    for measure_pnt in measure_pnts:
+      last_indx = len(measure_pnt) -1
+      if measure_pnt[last_indx-2] == switch_id and measure_pnt[last_indx-1] == nw_src and measure_pnt[last_indx] == nw_dst:
+        return True
+  
+  
+  return False
+
+
+def total_tag_and_cnt_switches(nw_src, nw_dst,controller):
+  """ returns the total number of measurement nodes (taggers and counters) for flow (nw_src,nw_dst)"""
+  for measure_pnts in controller.flow_measure_points.values():
+    for measure_pnt in measure_pnts:
+      last_indx = len(measure_pnt) -1
+      if measure_pnt[last_indx-1] == nw_src and measure_pnt[last_indx] == nw_dst:
+        return len(measure_pnt) -2 + 1  # minus two because don't want to count the nw_src, nw_dst, and plus one because one counting switch is not in teh measure_pnt list (it is the hash key)
+  
+  return -1
+   
+ 
+def handle_switch_query_result (event,controller):
+  """ Process a flow statistics query result from a given switch"""
+  switch_id = event.connection.dpid
+  
+  entry_num=0
+  packet_count=-1
+  vlan_id = -1
+  nw_src=-1
+  nw_dst=-1
+  
+  for flow_stat in event.stats: #note that event stats is a list of flow table entries
+    
+    nw_src = flow_stat.match.nw_src
+    nw_dst = flow_stat.match.nw_dst
+    
+    #insert something here about if it's a tagging or counting switch for this flow stat
+    is_flow_tagging_switch = is_flow_tagging_switch(switch_id, nw_src, nw_dst,controller)
+    is_flow_counting_switch = is_flow_counting_switch(switch_id, nw_src, nw_dst,controller)
+    
+
+    if not is_flow_tagging_switch and not is_flow_counting_switch:
+      continue
+    
+    if is_flow_tagging_switch:
+      for flow_action in flow_stat.actions:
+        if isinstance(flow_action, of.ofp_action_vlan_vid): 
+          packet_count = flow_stat.packet_count
+          vlan_id = flow_action.vlan_vid
+    elif is_flow_counting_switch:
+      if flow_stat.match.dl_vlan != of.OFP_VLAN_NONE and flow_stat.match.dl_vlan != None:
+        packet_count = flow_stat.packet_count
+        vlan_id = flow_stat.match.dl_vlan
+        
+  
+    # if was not set for some reason, then log nothing to output file
+    if packet_count > -1:
+      total = total_tag_and_cnt_switches(nw_src, nw_dst,controller)
+      
+      utils.record_pcount_value(vlan_id, nw_src, nw_dst, switch_id, packet_count,is_flow_tagging_switch, total,controller)      
+
+      log.debug("flow stat query result -- (s%s,src=%s,dst=%s,vid=%s) = %s; \t is_counter=%s, is_tagger=%s " %(switch_id,nw_src,nw_dst,vlan_id,packet_count,is_flow_counting_switch,is_flow_tagging_switch))
+      packet_count=-1
+      vlan_id = -1
+      nw_src=-1
+      nw_dst=-1
+    
+      
+
+
+
+
 
 class PCountSession (EventMixin):
   """ Single PCount session: measure the packet loss for flow, f, between an upstream switch and downstream switches, for a specified window of time
@@ -27,8 +185,8 @@ class PCountSession (EventMixin):
   
   def __init__ (self):
 
-    # for each switch keep track of flow tables (switchId --> flow-table-entry), specifically (dpid --> ofp_flow_mod). 
-    self.flowTables = {} #this is a hack that saves us from queries each switch for their flow table)
+    #  Copy of the version maintained at fault_tolerant_controller.   
+    self.flowTables = {} #for each switch keep track of flow tables (switchId --> flow-table-entry), specifically (dpid --> ofp_flow_mod).
  
     self.current_highest_priority_flow_num = of.OFP_DEFAULT_PRIORITY
     
@@ -47,7 +205,7 @@ class PCountSession (EventMixin):
     mtree_dstream_hosts -- the downstream hosts in teh multicast tree
     nw_src -- IP address of the source host (used to identify the flow to run the pcount session over)
     nw_dst -- IP address of the destination host, possibly a multicast address) (used to identify the flow to run the pcount sesssion over)
-    flow_tables -- list of all flow tables, copied from l3_arp_pcount
+    flow_tables -- list of all flow tables, copied from fault_tolerant_controller
     arpTable -- copy of the ARP table
     window_size -- window is the length (in seconds) of the sampling window
     
@@ -130,8 +288,8 @@ class PCountSession (EventMixin):
     # highest possible value for flow table entry is 2^(16) -1
     flow_priority= 2**16 - 1
     
-    timeout = random.randint(0,l3_arp_pcount.PCOUNT_WINDOW_SIZE/2) # amount of time packets will be dropped
-    #timeout = l3_arp_pcount.PCOUNT_WINDOW_SIZE/2   # 5 seconds of dropping packets
+    timeout = random.randint(0,fault_tolerant_controller.PCOUNT_WINDOW_SIZE/2) # amount of time packets will be dropped
+    #timeout = fault_tolerant_controller.PCOUNT_WINDOW_SIZE/2   # 5 seconds of dropping packets
                                                           
     send_flow_rem_flag = of.ofp_flow_mod_flags_rev_map['OFPFF_SEND_FLOW_REM']
     
@@ -201,7 +359,7 @@ class PCountSession (EventMixin):
     self._reinstall_basic_flow_entry(u_switch_id, nw_src, nw_dst, new_flow_priority)
 
     # (2): wait for time proportional to transit time between u and d to turn counting off at d
-    time.sleep(l3_arp_pcount.PROPOGATION_DELAY)
+    time.sleep(fault_tolerant_controller.PROPOGATION_DELAY)
     
     # (3) query u and d for packet counts
     self._query_tagging_switch(u_switch_id, vlan_id,nw_src,nw_dst)
@@ -341,16 +499,18 @@ class PCountSession (EventMixin):
     
     self._cache_flow_table_entry(u_switch_id, msg)
   
-    
   def _cache_flow_table_entry(self,dpid,flow_entry):
-    """ Add the flow table entry to our copy at the controller. """
-   # print "DPG: called l3_arp_pcount.__cache_flow_table_entry:(%s,%s)" %(dpid,flow_entry) 
+    """ For the given switch, adds the flow entry. This flow table mirrors the table stored at the switch
     
+    Keyword arguments:
+    dpid -- the switch id
+    flow_entry -- a modify state message (i.e., libopenflow_01.ofp_flow_mod object)
+    
+    """
     if not self.flowTables.has_key(dpid):
       flow_table = list()
       flow_table.append(flow_entry)
       self.flowTables[dpid] = flow_table
     else:
       self.flowTables[dpid].append(flow_entry)
-
-
+    
