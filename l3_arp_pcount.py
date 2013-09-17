@@ -15,7 +15,10 @@
 # You should have received a copy of the GNU General Public License
 # along with POX.  If not, see <http://www.gnu.org/licenses/>.
 
-""" This module is our controller for running PCount sessions.
+"""  As of 9/17/13 this module is NO LONGER BEING USED!! Code has been refactored all this functionality has been moved
+     to the applseed.py module
+
+This module is our controller for running PCount sessions.
 
 Some of this module code was copied from "pox/forwarding/l3_learning.py", which had the following comments:
 
