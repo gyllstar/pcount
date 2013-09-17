@@ -11,6 +11,8 @@ along with some data structures to create and manage multicast trees (Tree and P
 import utils, appleseed
 #from appleseed import appleseed.Entry
 from pox.lib.addresses import IPAddr,EthAddr
+import pox.openflow.libopenflow_01 as of
+from pox.lib.packet.ethernet import ethernet
 
 
 #################### Start of Hard-coded IP addresses and config files ####################
@@ -31,16 +33,16 @@ mcast_mac_addr2 = EthAddr("11:11:11:11:11:11")
 
 #measure_pnts_file_str="measure-6s-2d-2p.csv"
 #measure_pnts_file_str="measure-4s-3d-1p.csv"
-#measure_pnts_file_str="measure-4s-2d-1p.csv"
+measure_pnts_file_str="measure-4s-2d-1p.csv"
 #measure_pnts_file_str="measure-4s-1p.csv"
 #measure_pnts_file_str="measure-3s-2p.csv"
 #measure_pnts_file_str="measure-3s-1p.csv"
 #measure_pnts_file_str="measure-3s-2d-1p.csv"
 #measure_pnts_file_str="measure-2s-2p.csv"
-measure_pnts_file_str="measure-2s-1p.csv"
+#measure_pnts_file_str="measure-2s-1p.csv"
 
-#mtree_file_str="mtree-4s-1t.csv"
-mtree_file_str="mtree-6s-2t.csv"
+mtree_file_str="mtree-4s-1t.csv"
+#mtree_file_str="mtree-6s-2t.csv"
 #################### End of Hard-coded IP addresses and config files ####################
 
 
@@ -136,7 +138,7 @@ def setup_mtree1_flow_tables(nw_src,nw_mcast_dst,inport,mtree_switches,controlle
   switch_id = mtree_switches[0]
   s7_ports = utils.find_nonvlan_flow_outport(controller.flowTables,switch_id, nw_src, h1)
   install_basic_mcast_flow(switch_id, nw_src,s7_ports,nw_mcast_dst,controller)
-  controller.arpTable[switch_id][nw_mcast_dst] = appleseed.appleseed.Entry(s7_ports,mcast_mac_addr)
+  controller.arpTable[switch_id][nw_mcast_dst] = appleseed.Entry(s7_ports,mcast_mac_addr)
   
   
   # s6: install (src=10.0.0.3, dst = 10.10.10.10, outport_list) or

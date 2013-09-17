@@ -50,6 +50,7 @@ from pox.lib.util import dpidToStr
 from pox.lib.packet.ethernet import ethernet
 from pox.lib.packet.ipv4 import ipv4
 from pox.lib.packet.arp import arp
+from pox.lib.packet.dhcp import dhcp
 from pox.lib.addresses import IPAddr,EthAddr
 
 import pox.openflow.libopenflow_01 as of
@@ -65,20 +66,7 @@ import time
 ARP_TIMEOUT = 6000 * 2
 
 
-# in seconds
-PCOUNT_WINDOW_SIZE=10  
-PCOUNT_CALL_FREQUENCY=PCOUNT_WINDOW_SIZE+5
-PROPOGATION_DELAY=1 #seconds
 
-
-
-# this count is supposed to correspond for (what is asssumed) to be the single outgoing link of the upsttream tagging switch
-actual_total_pkt_dropped = 0
-detect_total_pkt_dropped = 0
-actual_pkt_dropped_gt_threshold_time=-1
-detect_pkt_dropped_gt_threshold_time=-1
-
-pkt_dropped_curr_sampling_window = 0
 packets_dropped_threshold = 15
 
 class Entry (object):
@@ -150,10 +138,18 @@ class fault_tolerant_controller (EventMixin):
     # multicast_dst_address -> list of tuples (u,d), representing a directed edge from u to d, that constitute all edges in the primary tree
     self.primary_trees = {}
     
+    utils.read_flow_measure_points_file(self)
+    utils.read_mtree_file(self)
     
-
+    self.actual_total_pkt_dropped = 0
+    self.detect_total_pkt_dropped = 0
+    self.actual_pkt_dropped_gt_threshold_time=-1
+    self.detect_pkt_dropped_gt_threshold_time=-1
     
-  def _cache_flow_table_entry(self,dpid,flow_entry):
+    self.pkt_dropped_curr_sampling_window = 0
+    
+    
+  def cache_flow_table_entry(self,dpid,flow_entry):
     """ For the given switch, adds the flow entry. This flow table mirrors the table stored at the switch
     
     Keyword arguments:
@@ -209,7 +205,7 @@ class fault_tolerant_controller (EventMixin):
     
     
     if multicast.is_mcast_address(dstaddr,self):
-      if dstaddr in installed_mtrees:
+      if dstaddr in multicast.installed_mtrees:
         # should never reach here because mcast tree is setup when switch closest to root receives a msg destined for a multicast address 
         print "already setup mcast tree for s%s, inport=%s,dest=%s." %(dpid,inport,dstaddr)
         return
@@ -240,7 +236,7 @@ class fault_tolerant_controller (EventMixin):
         
         msg.match = of.ofp_match(dl_type = ethernet.IP_TYPE, nw_src=match._nw_src, nw_dst = match._nw_dst) #DPG: match using L3 address
         
-        self._cache_flow_table_entry(dpid, msg)
+        self.cache_flow_table_entry(dpid, msg)
         
         event.connection.send(msg.pack())
         
@@ -277,13 +273,13 @@ class fault_tolerant_controller (EventMixin):
           if multicast.is_mcast_address(a.protodst,self):
             log.debug("skipping normal ARP Request code because ARP request is for multicast address %s" %(str(a.protodst)))
             
-            if a.protodst in installed_mtrees:
+            if a.protodst in multicast.installed_mtrees:
               print "already setup mcast tree for s%s, inport=%s,dest=%s, just resending the ARP reply and skipping mcast setup." %(dpid,inport,a.protodst)
               utils.send_arp_reply(packet, a, dpid, inport, self.arpTable[dpid][a.protodst].mac, self.arpTable[dpid][a.protodst].port)
             else:
               #getting the outport requires that we have run a "pingall" to setup the flow tables for the non-multicast addreses
-              outport = utils.find_nonvlan_flow_outport(self.flowTables,dpid, a.protosrc, h1)
-              self.arpTable[dpid][a.protodst] = Entry(outport,mcast_mac_addr)
+              outport = utils.find_nonvlan_flow_outport(self.flowTables,dpid, a.protosrc, multicast.h1)
+              self.arpTable[dpid][a.protodst] = Entry(outport,multicast.mcast_mac_addr)
               utils.send_arp_reply(packet, a, dpid, inport, self.arpTable[dpid][a.protodst].mac, self.arpTable[dpid][a.protodst].port)
             
             return
@@ -346,30 +342,36 @@ class fault_tolerant_controller (EventMixin):
     
     Updates and logs the count of the true number of packets dropped, and prints this value to the console 
     
+    TODO: move to PCount ?
+    
     """
     num_dropped_pkts = event.ofp.packet_count
     
-    global actual_total_pkt_dropped,actual_pkt_dropped_gt_threshold_time,pkt_dropped_curr_sampling_window
+    self.actual_total_pkt_dropped += num_dropped_pkts
+    self.pkt_dropped_curr_sampling_window = num_dropped_pkts
     
-    actual_total_pkt_dropped += num_dropped_pkts
-    pkt_dropped_curr_sampling_window = num_dropped_pkts
+    outStr = "Flow removed on s%s, packets dropped = %s, total packets droppped=%s" %(event.dpid,num_dropped_pkts,self.actual_total_pkt_dropped)
     
-    outStr = "Flow removed on s%s, packets dropped = %s, total packets droppped=%s" %(event.dpid,num_dropped_pkts,actual_total_pkt_dropped)
-    print outStr
-    
-    if actual_total_pkt_dropped > packets_dropped_threshold:
-      actual_pkt_dropped_gt_threshold_time = time.clock()
+    if self.actual_total_pkt_dropped > packets_dropped_threshold:
+      self.actual_pkt_dropped_gt_threshold_time = time.clock()
       print "\n-------------------------------------------------------------------------------------------------------------------------------------------------------------"
-      print "Total packets ACTUALLY dropped = %s, exceeds threshold of %s.  Timestamp = %s" %(actual_total_pkt_dropped,packets_dropped_threshold,actual_pkt_dropped_gt_threshold_time)
+      print "Total packets ACTUALLY dropped = %s, exceeds threshold of %s.  Timestamp = %s" %(self.actual_total_pkt_dropped,packets_dropped_threshold,self.actual_pkt_dropped_gt_threshold_time)
       print "-------------------------------------------------------------------------------------------------------------------------------------------------------------"
     log.debug(outStr) 
 
   def _handle_PacketIn (self, event):
     """ This is where all packets arriving at the controller received.  This function delegates the processing to sub-functions."""
     
+
+    
     dpid = event.connection.dpid
     inport = event.port
     packet = event.parsed
+    
+    if isinstance(packet.next,ipv4) and packet.next.srcip == IPAddr("0.0.0.0"):
+      #print "DPG 0 :::::::: s%i inport=%i IP %s => %s" %(dpid,inport,str(packet.next.srcip),str(packet.next.dstip))
+      return
+    
     if not packet.parsed:
       log.warning("%i %i ignoring unparsed packet", dpid, inport)
       return

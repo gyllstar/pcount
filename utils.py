@@ -23,7 +23,11 @@ from pox.core import core
 log = core.getLogger("dpg_utils")
 import pox.openflow.libopenflow_01 as of
 from pox.lib.addresses import IPAddr
-import multicast
+from pox.lib.packet.arp import arp
+from pox.lib.packet.ethernet import ethernet
+import multicast,appleseed
+import csv,time
+
 
 def send_msg_to_switch(msg,switch_id):
   
@@ -60,14 +64,14 @@ def read_mtree_file(controller):
   TODO: the location of the file is hard-coded and should be read for the command line, or improved in some way
   
   """
-  mtree_file = "ext/topos/mtree/%s" %(mtree_file_str)
+  mtree_file = "ext/topos/mtree/%s" %(multicast.mtree_file_str)
   
   # check if we need to load the mtree file
-  num_switches = measure_pnts_file_str.split("-")[1]
-  num_switches2 = mtree_file_str.split("-")[1]
+  num_switches = multicast.measure_pnts_file_str.split("-")[1]
+  num_switches2 = multicast.mtree_file_str.split("-")[1]
   
   if num_switches != num_switches2:
-    log.info("did not load mtree file ('%s') because not using a valid matching measurement points file (loaded '%s')" %(mtree_file_str,measure_pnts_file_str))
+    log.info("did not load mtree file ('%s') because not using a valid matching measurement points file (loaded '%s')" %(multicast.mtree_file_str,multicast.measure_pnts_file_str))
     return
   
   #file structure: multicast address,src,dest1,dest2,...
@@ -104,7 +108,7 @@ def read_flow_measure_points_file(controller):
   TODO: the location of the file is hard-coded, as our the IP addresses of the switches
   """
   # file format: downstream-switch1,downstream-switch2, ..., upstream_switch,src-ip,dest-ip
-  measure_file = "ext/topos/%s" %(measure_pnts_file_str)
+  measure_file = "ext/topos/%s" %(multicast.measure_pnts_file_str)
   log.debug("using measure points file: %s" %(measure_file))
   
   for line_list in csv.reader(open(measure_file)):
@@ -180,7 +184,7 @@ def send_arp_reply(eth_packet,arp_packet,switch_id,inport,mcast_mac_addr,outport
     
 def log_pcount_results(controller):
   
-  file_base = measure_pnts_file_str.split(".")[0]
+  file_base = multicast.measure_pnts_file_str.split(".")[0]
   #w = csv.writer(open("ext/results/current/pcount-output.csv", "w"))
   w = csv.writer(open("ext/results/current/%s-output.csv" %(file_base), "w"))
   for key, val in controller.pcount_results.items():
@@ -215,9 +219,8 @@ def record_pcount_value(vlan_id,nw_src,nw_dst,switch_id,packet_count,is_upstream
     
   if is_upstream:
     result_list.insert(2,switch_id)
-    global pkt_dropped_curr_sampling_window
-    packet_count += pkt_dropped_curr_sampling_window  #count the packets dropped by our flow entry at 'u' that drops packets to simulate a lossy link
-    pkt_dropped_curr_sampling_window=0
+    packet_count += controller.pkt_dropped_curr_sampling_window  #count the packets dropped by our flow entry at 'u' that drops packets to simulate a lossy link
+    controller.pkt_dropped_curr_sampling_window=0
     result_list.insert(3, packet_count)
   else:
     result_list.append(switch_id)
@@ -238,20 +241,20 @@ def record_pcount_value(vlan_id,nw_src,nw_dst,switch_id,packet_count,is_upstream
           controller.install_backup_trees(diff)
         
         if not updatedTotalDrops:
-          global detect_total_pkt_dropped
-          detect_total_pkt_dropped += diff
+          
+          controller.detect_total_pkt_dropped += diff
           #pkt_dropped_curr_sampling_window=0
           
-          print "detected tatal packets dropped = %s, actual packets dropped=%s" %(detect_total_pkt_dropped,actual_total_pkt_dropped)
+          log.debug("detected tatal packets dropped = %s, actual packets dropped=%s" %(controller.detect_total_pkt_dropped,controller.actual_total_pkt_dropped))
           
-          if detect_total_pkt_dropped > packets_dropped_threshold:
-            detect_pkt_dropped_gt_threshold_time = time.clock()
-            detect_time_lag = detect_pkt_dropped_gt_threshold_time - actual_pkt_dropped_gt_threshold_time
+          if controller.detect_total_pkt_dropped > appleseed.packets_dropped_threshold:
+            controller.detect_pkt_dropped_gt_threshold_time = time.clock()
+            detect_time_lag = controller.detect_pkt_dropped_gt_threshold_time - controller.actual_pkt_dropped_gt_threshold_time
             print "\n*************************************************************************************************************************************************************"
-            print "Total detected packets dropped = %s, exceeds threshold of %s.  Actual Time=%s, Detect Time = %s, Detection Time Lag = %s" %(detect_total_pkt_dropped,
-                                                                                                                                             packets_dropped_threshold,
-                                                                                                                                             actual_pkt_dropped_gt_threshold_time,
-                                                                                                                                             detect_pkt_dropped_gt_threshold_time,
+            print "Total detected packets dropped = %s, exceeds threshold of %s.  Actual Time=%s, Detect Time = %s, Detection Time Lag = %s" %(controller.detect_total_pkt_dropped,
+                                                                                                                                             appleseed.packets_dropped_threshold,
+                                                                                                                                             controller.actual_pkt_dropped_gt_threshold_time,
+                                                                                                                                             controller.detect_pkt_dropped_gt_threshold_time,
                                                                                                                                              detect_time_lag)
             print "*************************************************************************************************************************************************************\n"
             

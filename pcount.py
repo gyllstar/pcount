@@ -11,7 +11,7 @@ along with a PCountSession class that does the actual PCount implmentation.
 from pox.core import core
 from pox.lib.recoco import Timer
 import pox
-log = core.getLogger("PCount_Session")
+log = core.getLogger("pcount")
 
 from pox.lib.addresses import IPAddr,EthAddr
 from pox.lib.packet.ethernet import ethernet
@@ -27,6 +27,10 @@ import time, random
 
 global_vlan_id=0
 
+# in seconds
+PCOUNT_WINDOW_SIZE=10  
+PCOUNT_CALL_FREQUENCY=PCOUNT_WINDOW_SIZE+5
+PROPOGATION_DELAY=1 #seconds
 
 
 def start_pcount_thread(u_switch_id, d_switch_ids, nw_src, nw_dst,controller):
@@ -41,7 +45,7 @@ def start_pcount_thread(u_switch_id, d_switch_ids, nw_src, nw_dst,controller):
   """
   pcounter = PCountSession()
   
-  strip_vlan_switch_ids = flow_strip_vlan_switch_ids[(nw_src,nw_dst)]
+  strip_vlan_switch_ids = controller.flow_strip_vlan_switch_ids[(nw_src,nw_dst)]
   
   Timer(PCOUNT_CALL_FREQUENCY,pcounter.pcount_session, args = [u_switch_id, d_switch_ids,strip_vlan_switch_ids,controller.mtree_dstream_hosts,nw_src, nw_dst, controller.flowTables,controller.arpTable, PCOUNT_WINDOW_SIZE],recurring=True)
 
@@ -76,7 +80,7 @@ def check_start_pcount(d_switch_id,nw_src,nw_dst,controller):
 
 # TODO: refactor this mess by changing the structure of flow_measure_points to (nw_src,nw_dst) -> (d_switch_id2, d_switch_id3, .... , u_switch_id) b/c no longer will need to search
 #       the entire dict for a match
-def is_flow_counting_switch(switch_id,nw_src,nw_dst,controller):
+def is_counting_switch(switch_id,nw_src,nw_dst,controller):
   """ Checks if this switch is a downstream counting node for the (nw_src,nw_dst) flow
    
    TODO: refactor this mess by changing the structure of flow_measure_points to (nw_src,nw_dst) -> (d_switch_id2, d_switch_id3, .... , u_switch_id) b/c no longer will need to search
@@ -102,7 +106,7 @@ def is_flow_counting_switch(switch_id,nw_src,nw_dst,controller):
 
 
 # tagging takes place at the upstream node
-def is_flow_tagging_switch(switch_id,nw_src,nw_dst,controller):
+def is_tagging_switch(switch_id,nw_src,nw_dst,controller):
   """ is this an upstream tagging switch for flow (nw_src,nw_dst) """
   
   for measure_pnts in controller.flow_measure_points.values():
@@ -142,8 +146,8 @@ def handle_switch_query_result (event,controller):
     nw_dst = flow_stat.match.nw_dst
     
     #insert something here about if it's a tagging or counting switch for this flow stat
-    is_flow_tagging_switch = is_flow_tagging_switch(switch_id, nw_src, nw_dst,controller)
-    is_flow_counting_switch = is_flow_counting_switch(switch_id, nw_src, nw_dst,controller)
+    is_flow_tagging_switch = is_tagging_switch(switch_id, nw_src, nw_dst,controller)
+    is_flow_counting_switch = is_counting_switch(switch_id, nw_src, nw_dst,controller)
     
 
     if not is_flow_tagging_switch and not is_flow_counting_switch:
@@ -288,8 +292,7 @@ class PCountSession (EventMixin):
     # highest possible value for flow table entry is 2^(16) -1
     flow_priority= 2**16 - 1
     
-    timeout = random.randint(0,fault_tolerant_controller.PCOUNT_WINDOW_SIZE/2) # amount of time packets will be dropped
-    #timeout = fault_tolerant_controller.PCOUNT_WINDOW_SIZE/2   # 5 seconds of dropping packets
+    timeout = random.randint(0,PCOUNT_WINDOW_SIZE/2) # amount of time packets will be dropped
                                                           
     send_flow_rem_flag = of.ofp_flow_mod_flags_rev_map['OFPFF_SEND_FLOW_REM']
     
@@ -359,7 +362,7 @@ class PCountSession (EventMixin):
     self._reinstall_basic_flow_entry(u_switch_id, nw_src, nw_dst, new_flow_priority)
 
     # (2): wait for time proportional to transit time between u and d to turn counting off at d
-    time.sleep(fault_tolerant_controller.PROPOGATION_DELAY)
+    time.sleep(PROPOGATION_DELAY)
     
     # (3) query u and d for packet counts
     self._query_tagging_switch(u_switch_id, vlan_id,nw_src,nw_dst)
