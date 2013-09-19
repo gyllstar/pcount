@@ -36,6 +36,7 @@ rather we identify switches by their switch_id and use the flow tables to determ
 """
 
 from pox.core import core
+from pox.openflow.discovery import Discovery
 import pcount
 import multicast
 import pox
@@ -67,7 +68,7 @@ ARP_TIMEOUT = 6000 * 2
 
 
 
-packets_dropped_threshold = 15
+packets_dropped_threshold = 5
 
 class Entry (object):
   """
@@ -116,6 +117,7 @@ class fault_tolerant_controller (EventMixin):
     self.arpTable = {}
 
     self.listenTo(core)
+    self.listenTo(core.openflow_discovery)
     
     # for each switch keep track of flow tables (switchId --> flow-table-entry), specifically (dpid --> ofp_flow_mod). 
     self.flowTables = {} 
@@ -141,12 +143,15 @@ class fault_tolerant_controller (EventMixin):
     utils.read_flow_measure_points_file(self)
     utils.read_mtree_file(self)
     
+    # TODO: this should be refactored to be statistics between 2 measurement points.  currently this lumps together all loss counts, which is problematic when we have
+    #       more than a single pair of measurement points
     self.actual_total_pkt_dropped = 0
     self.detect_total_pkt_dropped = 0
     self.actual_pkt_dropped_gt_threshold_time=-1
     self.detect_pkt_dropped_gt_threshold_time=-1
     
     self.pkt_dropped_curr_sampling_window = 0
+    
     
     
   def cache_flow_table_entry(self,dpid,flow_entry):
@@ -190,6 +195,12 @@ class fault_tolerant_controller (EventMixin):
     
     """
     log.debug("s%i inport=%i IP %s => %s", dpid,inport,str(packet.next.srcip),str(packet.next.dstip))
+    
+    #for link in Discovery.adjacency:
+    print core.openflow_discovery.adjacency
+    for link in core.openflow_discovery.adjacency:
+      print link
+      print "(n%s,n%s) = outport %s ||| (n%s,n%s) = outport %s " %(link.dpid1,link.dpid2,link.port1,link.dpid2,link.dpid1,link.port2) 
 
     # Learn or update port/MAC info for the SRC-IP (not dest!!)
     if packet.next.srcip in self.arpTable[dpid]:
@@ -248,8 +259,16 @@ class fault_tolerant_controller (EventMixin):
       log.error("no ARP entry at switch s%s for dst=%s" %(dpid,dstaddr))
         
   
-  
+  def blah_blah_handle_LinkEvent (self, event):
 
+    l = event.link
+    #print l[0],l[1],l[2],l[3]
+
+            
+    ##### 9/17/13 DPG self-note for link discovery
+    for link in core.openflow_discovery.adjacency:
+      print link
+      print "(n%s,n%s) = outport %s ||| (n%s,n%s) = outport %s " %(link.dpid1,link.dpid2,link.port1,link.dpid2,link.dpid1,link.port2) 
   
   def _handle_arp_PacketIn(self,event,packet,dpid,inport):
     """ Learns the inport the switch receive packets from the given IP address
@@ -361,9 +380,6 @@ class fault_tolerant_controller (EventMixin):
 
   def _handle_PacketIn (self, event):
     """ This is where all packets arriving at the controller received.  This function delegates the processing to sub-functions."""
-    
-
-    
     dpid = event.connection.dpid
     inport = event.port
     packet = event.parsed
@@ -416,7 +432,10 @@ class fault_tolerant_controller (EventMixin):
 
 
 def launch ():
-  
+  if 'openflow_discovery' not in core.components:
+    import pox.openflow.discovery as discovery
+    core.registerNew(discovery.Discovery)
+    
   core.registerNew(fault_tolerant_controller)
   
   
